@@ -64,7 +64,282 @@ class MaskCamEmbed(nn.Module):
         return add_embeds
 
 
-class WorldStereoModel(WanTransformer3DModel):
+class _WorldStereoCommonMixin:
+    def _init_worldstereo_base(
+            self,
+            patch_size: Tuple[int],
+            num_attention_heads: int,
+            attention_head_dim: int,
+            in_channels: int,
+            out_channels: int,
+            text_dim: int,
+            freq_dim: int,
+            ffn_dim: int,
+            num_layers: int,
+            cross_attn_norm: bool,
+            qk_norm: Optional[str],
+            eps: float,
+            image_dim: Optional[int],
+            added_kv_proj_dim: Optional[int],
+            rope_max_seq_len: int,
+            pos_embed_seq_len: Optional[int],
+            controlnet_cfg,
+            base_model: str,
+    ) -> None:
+        WanTransformer3DModel.__init__(
+            self,
+            patch_size=patch_size,
+            num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            text_dim=text_dim,
+            freq_dim=freq_dim,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+            cross_attn_norm=cross_attn_norm,
+            qk_norm=qk_norm,
+            eps=eps,
+            image_dim=image_dim,
+            added_kv_proj_dim=added_kv_proj_dim,
+            rope_max_seq_len=rope_max_seq_len,
+            pos_embed_seq_len=pos_embed_seq_len,
+        )
+
+        self.controlnet_cfg = controlnet_cfg
+        if self.controlnet_cfg is not None:
+            self.controlnet_cfg.base_model = base_model
+        self.in_channels = in_channels
+        self.patch_size = patch_size
+        self.rope_max_seq_len = rope_max_seq_len
+        self.sp_size = 1
+
+    def _init_controlnet_base(self) -> None:
+        self.controlnet = WanXControlNet(self.controlnet_cfg)
+        self.controlnet_rope = WanRotaryPosEmbed(
+            self.controlnet_cfg.dim // self.controlnet_cfg.num_heads,
+            self.patch_size,
+            self.rope_max_seq_len,
+        )
+
+    def _load_or_create_controlnet_embeddings(self, load_uni3c: bool) -> None:
+        if not load_uni3c:
+            self.controlnet.controlnet_patch_embedding = nn.Conv3d(
+                self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
+            )
+            self.controlnet.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
+            self.controlnet.controlnet_patch_embedding.weight.data.copy_(self.patch_embedding.weight.data.clone())
+            self.controlnet.controlnet_patch_embedding.bias.data.copy_(self.patch_embedding.bias.data.clone())
+            return
+
+        # Hardcoded for backward compatibility with open-source uni3c.
+        self.controlnet_patch_embedding = nn.Conv3d(
+            self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
+        )
+        self.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
+        model_path = hf_hub_download(repo_id="ewrfcas/Uni3C", filename="controlnet.pth", repo_type="model")
+        state_dict = torch.load(model_path, map_location="cpu")
+
+        missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
+        self.controlnet.controlnet_patch_embedding = copy.deepcopy(self.controlnet_patch_embedding)
+        self.controlnet.controlnet_mask_embedding = copy.deepcopy(self.controlnet_mask_embedding)
+        del self.controlnet_patch_embedding
+        del self.controlnet_mask_embedding
+        rank0_log(f"Unexpected keys: {unexpected_keys}")
+
+    def _freeze_backbone_for_controlnet(self, freeze_backbone: bool) -> None:
+        if freeze_backbone:
+            self.requires_grad_(False)
+            self.controlnet.requires_grad_(True)
+
+    def _prepare_lora_scale(self, attention_kwargs, use_rank0_warning: bool = False):
+        if attention_kwargs is not None:
+            attention_kwargs = attention_kwargs.copy()
+            lora_scale = attention_kwargs.pop("scale", 1.0)
+        else:
+            lora_scale = 1.0
+
+        if USE_PEFT_BACKEND:
+            scale_lora_layers(self, lora_scale)
+        elif attention_kwargs is not None and attention_kwargs.get("scale", None) is not None:
+            message = "Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective."
+            if use_rank0_warning:
+                rank0_log(message, level="WARNING")
+            else:
+                logger.warning(message)
+
+        return attention_kwargs, lora_scale
+
+    def _unscale_lora_if_needed(self, lora_scale: float) -> None:
+        if USE_PEFT_BACKEND:
+            unscale_lora_layers(self, lora_scale)
+
+    def _get_patch_context(self, hidden_states: torch.Tensor):
+        batch_size, num_channels, num_frames, height, width = hidden_states.shape
+        p_t, p_h, p_w = self.config.patch_size
+        post_patch_num_frames = num_frames // p_t
+        post_patch_height = height // p_h
+        post_patch_width = width // p_w
+        if self.controlnet_cfg is None or "5B" not in self.controlnet_cfg.get("base_model", ""):
+            image_width, image_height = width * 8, height * 8
+        else:
+            image_width, image_height = width * 16, height * 16
+
+        return (
+            batch_size,
+            num_channels,
+            num_frames,
+            height,
+            width,
+            p_t,
+            p_h,
+            p_w,
+            post_patch_num_frames,
+            post_patch_height,
+            post_patch_width,
+            image_width,
+            image_height,
+        )
+
+    def _embed_timestep_and_conditions(
+            self,
+            timestep: torch.LongTensor,
+            encoder_hidden_states: torch.Tensor,
+            encoder_hidden_states_image: Optional[torch.Tensor],
+    ):
+        if timestep.ndim == 2:
+            ts_seq_len = timestep.shape[1]
+            timestep = timestep.flatten()
+        else:
+            ts_seq_len = None
+
+        temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
+            timestep, encoder_hidden_states, encoder_hidden_states_image, timestep_seq_len=ts_seq_len
+        )
+        if ts_seq_len is not None:
+            timestep_proj = timestep_proj.unflatten(2, (6, -1))
+        else:
+            timestep_proj = timestep_proj.unflatten(1, (6, -1))
+
+        if encoder_hidden_states_image is not None:
+            encoder_hidden_states = torch.concat([encoder_hidden_states_image, encoder_hidden_states], dim=1)
+
+        return temb, timestep_proj, encoder_hidden_states, ts_seq_len
+
+    def _make_controlnet_add_infos(
+            self,
+            *,
+            extrinsics,
+            intrinsics,
+            post_patch_width: int,
+            post_patch_height: int,
+            image_width: int,
+            image_height: int,
+    ):
+        return {
+            "extrinsics": extrinsics,
+            "intrinsics": intrinsics,
+            "patches_x": post_patch_width,
+            "patches_y": post_patch_height,
+            "image_width": image_width,
+            "image_height": image_height,
+        }
+
+    def _prepare_controlnet_inputs(
+            self,
+            *,
+            hidden_states,
+            render_latent,
+            render_mask,
+            camera_embedding,
+            concat_hidden_prefix: bool,
+    ):
+        if not hasattr(self, "controlnet"):
+            return None, None
+
+        if concat_hidden_prefix:
+            render_latent = torch.cat([hidden_states[:, :20], render_latent], dim=1)
+        controlnet_rotary_emb = self.controlnet_rope(render_latent)
+        controlnet_inputs = self.controlnet.controlnet_patch_embedding(render_latent)
+        controlnet_inputs = controlnet_inputs.flatten(2).transpose(1, 2)
+
+        if camera_embedding is not None:
+            add_inputs = torch.cat([render_mask, camera_embedding], dim=1)
+        else:
+            add_inputs = render_mask
+        add_inputs = self.controlnet.controlnet_mask_embedding(add_inputs)
+
+        return controlnet_inputs + add_inputs, controlnet_rotary_emb
+
+    def _run_controlnet(
+            self,
+            *,
+            controlnet_inputs,
+            controlnet_rotary_emb,
+            temb,
+            add_infos,
+            parallel_dims,
+            use_5b_last_temb: bool,
+    ):
+        if not hasattr(self, "controlnet"):
+            return []
+
+        if self.sp_size > 1:
+            assert controlnet_inputs.shape[1] % self.sp_size == 0
+            controlnet_inputs = torch.chunk(controlnet_inputs, self.sp_size, dim=1)[parallel_dims.sp_rank]
+            controlnet_rotary_emb = (
+                torch.chunk(controlnet_rotary_emb[0], self.sp_size, dim=1)[parallel_dims.sp_rank],
+                torch.chunk(controlnet_rotary_emb[1], self.sp_size, dim=1)[parallel_dims.sp_rank],
+            )
+
+        with torch.autocast("cuda", dtype=self.dtype, enabled=True):
+            if use_5b_last_temb and "5B" in self.controlnet_cfg.get("base_model", ""):
+                return self.controlnet(
+                    hidden_states=controlnet_inputs, temb=temb[:, -1], rotary_emb=controlnet_rotary_emb, **add_infos
+                )
+            return self.controlnet(hidden_states=controlnet_inputs, temb=temb, rotary_emb=controlnet_rotary_emb, **add_infos)
+
+    def _apply_output_projection(
+            self,
+            *,
+            hidden_states,
+            temb,
+            parallel_dims,
+            batch_size: int,
+            post_patch_num_frames: int,
+            post_patch_height: int,
+            post_patch_width: int,
+            p_t: int,
+            p_h: int,
+            p_w: int,
+    ):
+        if temb.ndim == 3:
+            shift, scale = (self.scale_shift_table.unsqueeze(0) + temb.unsqueeze(2)).chunk(2, dim=2)
+            shift = shift.squeeze(2)
+            scale = scale.squeeze(2)
+            if self.sp_size > 1:
+                shift = torch.chunk(shift, self.sp_size, dim=1)[parallel_dims.sp_rank]
+                scale = torch.chunk(scale, self.sp_size, dim=1)[parallel_dims.sp_rank]
+        else:
+            shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
+
+        shift = shift.to(hidden_states.device)
+        scale = scale.to(hidden_states.device)
+
+        hidden_states = (self.norm_out(hidden_states.float()) * (1 + scale) + shift).type_as(hidden_states)
+        hidden_states = self.proj_out(hidden_states)
+
+        if self.sp_size > 1:
+            hidden_states = all_gather(hidden_states, dim=1, group=parallel_dims.sp_group)
+
+        hidden_states = hidden_states.reshape(
+            batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
+        )
+        hidden_states = hidden_states.permute(0, 7, 1, 4, 2, 5, 3, 6)
+        return hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
+
+
+class WorldStereoModel(_WorldStereoCommonMixin, WanTransformer3DModel):
     r"""
     A Transformer model for video-like data used in the Wan model.
     """
@@ -90,66 +365,31 @@ class WorldStereoModel(WanTransformer3DModel):
             controlnet_cfg=None,
             base_model="",
     ) -> None:
-        super().__init__(patch_size=patch_size,
-                         num_attention_heads=num_attention_heads,
-                         attention_head_dim=attention_head_dim,
-                         in_channels=in_channels,
-                         out_channels=out_channels,
-                         text_dim=text_dim,
-                         freq_dim=freq_dim,
-                         ffn_dim=ffn_dim,
-                         num_layers=num_layers,
-                         cross_attn_norm=cross_attn_norm,
-                         qk_norm=qk_norm,
-                         eps=eps,
-                         image_dim=image_dim,
-                         added_kv_proj_dim=added_kv_proj_dim,
-                         rope_max_seq_len=rope_max_seq_len,
-                         pos_embed_seq_len=pos_embed_seq_len)
-
-        self.controlnet_cfg = controlnet_cfg
-        if self.controlnet_cfg is not None:
-            self.controlnet_cfg.base_model = base_model
-        self.in_channels = in_channels
-        self.patch_size = patch_size
-        self.rope_max_seq_len = rope_max_seq_len
-        self.sp_size = 1
+        self._init_worldstereo_base(
+            patch_size=patch_size,
+            num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            text_dim=text_dim,
+            freq_dim=freq_dim,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+            cross_attn_norm=cross_attn_norm,
+            qk_norm=qk_norm,
+            eps=eps,
+            image_dim=image_dim,
+            added_kv_proj_dim=added_kv_proj_dim,
+            rope_max_seq_len=rope_max_seq_len,
+            pos_embed_seq_len=pos_embed_seq_len,
+            controlnet_cfg=controlnet_cfg,
+            base_model=base_model,
+        )
 
     def build_controlnet(self, load_uni3c=False, freeze_backbone=True):
-        # controlnet
-        self.controlnet = WanXControlNet(self.controlnet_cfg)
-        self.controlnet_rope = WanRotaryPosEmbed(self.controlnet_cfg.dim // self.controlnet_cfg.num_heads, self.patch_size, self.rope_max_seq_len)
-        if not load_uni3c:  # initialize new controlnet
-            # Store all weights under self.controlnet for convenience
-            self.controlnet.controlnet_patch_embedding = nn.Conv3d(
-                self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
-            )
-            self.controlnet.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
-            # copy weight to controlnet patch embedding
-            self.controlnet.controlnet_patch_embedding.weight.data.copy_(self.patch_embedding.weight.data.clone())
-            self.controlnet.controlnet_patch_embedding.bias.data.copy_(self.patch_embedding.bias.data.clone())
-        else:
-            # Hardcoded for backward compatibility with open-source uni3c
-            self.controlnet_patch_embedding = nn.Conv3d(
-                self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
-            )
-            self.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
-            model_path = hf_hub_download(repo_id="ewrfcas/Uni3C", filename="controlnet.pth", repo_type="model")  # download weights from huggingface
-            state_dict = torch.load(model_path, map_location="cpu")
-
-            missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
-            # Copy weights back to self.controlnet
-            self.controlnet.controlnet_patch_embedding = copy.deepcopy(self.controlnet_patch_embedding)
-            self.controlnet.controlnet_mask_embedding = copy.deepcopy(self.controlnet_mask_embedding)
-            del self.controlnet_patch_embedding
-            del self.controlnet_mask_embedding
-            # print("Missing keys:", missing_keys)
-            rank0_log(f"Unexpected keys: {unexpected_keys}")
-
-        if freeze_backbone:
-            # set controlnet trainable only
-            self.requires_grad_(False)
-            self.controlnet.requires_grad_(True)
+        self._init_controlnet_base()
+        self._load_or_create_controlnet_embeddings(load_uni3c)
+        self._freeze_backbone_for_controlnet(freeze_backbone)
 
     def forward(
             self,
@@ -171,28 +411,23 @@ class WorldStereoModel(WanTransformer3DModel):
         :param camera_embedding: [b,6,f,h,w]
         """
         parallel_dims = get_parallel_state()
-        if attention_kwargs is not None:
-            attention_kwargs = attention_kwargs.copy()
-            lora_scale = attention_kwargs.pop("scale", 1.0)
-        else:
-            lora_scale = 1.0
+        attention_kwargs, lora_scale = self._prepare_lora_scale(attention_kwargs)
 
-        if USE_PEFT_BACKEND:
-            # weight the lora layers by setting `lora_scale` for each PEFT layer
-            scale_lora_layers(self, lora_scale)
-        else:
-            if attention_kwargs is not None and attention_kwargs.get("scale", None) is not None:
-                logger.warning("Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective.")
-
-        batch_size, num_channels, num_frames, height, width = hidden_states.shape
-        if self.controlnet_cfg is None or "5B" not in self.controlnet_cfg.get("base_model", ""):
-            image_width, image_height = width * 8, height * 8
-        else:
-            image_width, image_height = width * 16, height * 16
-        p_t, p_h, p_w = self.config.patch_size
-        post_patch_num_frames = num_frames // p_t
-        post_patch_height = height // p_h
-        post_patch_width = width // p_w
+        (
+            batch_size,
+            num_channels,
+            num_frames,
+            height,
+            width,
+            p_t,
+            p_h,
+            p_w,
+            post_patch_num_frames,
+            post_patch_height,
+            post_patch_width,
+            image_width,
+            image_height,
+        ) = self._get_patch_context(hidden_states)
 
         # TODO: some data has invalid camera values — guard against non-finite extrinsics
         if extrinsics is not None and (~torch.isfinite(extrinsics)).sum() > 0:
@@ -206,74 +441,43 @@ class WorldStereoModel(WanTransformer3DModel):
             print("Error intrinsics!!!")
             intrinsics = torch.eye(3, dtype=intrinsics.dtype, device=intrinsics.device)[None].repeat(intrinsics.shape[0], 1, 1)  # [N,3,3]
 
-        if hasattr(self, "controlnet"):
-            ### process controlnet inputs ###
-            # WAN2.1 and WAN2.2-14B concatenate condition latent; WAN2.2-5B blends condition latent
-            if "5B" not in self.controlnet_cfg.get("base_model", ""):
-                render_latent = torch.cat([hidden_states[:, :20], render_latent], dim=1)
-            controlnet_rotary_emb = self.controlnet_rope(render_latent)
-            controlnet_inputs = self.controlnet.controlnet_patch_embedding(render_latent)
-            controlnet_inputs = controlnet_inputs.flatten(2).transpose(1, 2)
-
-            # additional inputs (mask, camera embedding)
-            if camera_embedding is not None:
-                add_inputs = torch.cat([render_mask, camera_embedding], dim=1)
-            else:
-                add_inputs = render_mask
-            add_inputs = self.controlnet.controlnet_mask_embedding(add_inputs)
-            controlnet_inputs = controlnet_inputs + add_inputs
-            ### process controlnet inputs over ###
-        else:
-            controlnet_inputs = None
+        # WAN2.1 and WAN2.2-14B concatenate condition latent; WAN2.2-5B blends condition latent.
+        controlnet_inputs, controlnet_rotary_emb = self._prepare_controlnet_inputs(
+            hidden_states=hidden_states,
+            render_latent=render_latent,
+            render_mask=render_mask,
+            camera_embedding=camera_embedding,
+            concat_hidden_prefix="5B" not in self.controlnet_cfg.get("base_model", "") if hasattr(self, "controlnet") else False,
+        )
 
         rotary_emb = self.rope(hidden_states)
 
         hidden_states = self.patch_embedding(hidden_states)
         hidden_states = hidden_states.flatten(2).transpose(1, 2)
 
-        # timestep shape: batch_size, or batch_size, seq_len (wan 2.2 ti2v)
-        if timestep.ndim == 2:
-            ts_seq_len = timestep.shape[1]
-            timestep = timestep.flatten()  # batch_size * seq_len
-        else:
-            ts_seq_len = None
-
-        temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
-            timestep, encoder_hidden_states, encoder_hidden_states_image, timestep_seq_len=ts_seq_len
+        temb, timestep_proj, encoder_hidden_states, ts_seq_len = self._embed_timestep_and_conditions(
+            timestep, encoder_hidden_states, encoder_hidden_states_image
         )
-        if ts_seq_len is not None:
-            # batch_size, seq_len, 6, inner_dim
-            timestep_proj = timestep_proj.unflatten(2, (6, -1))
-        else:
-            # batch_size, 6, inner_dim
-            timestep_proj = timestep_proj.unflatten(1, (6, -1))
 
-        if encoder_hidden_states_image is not None:
-            encoder_hidden_states = torch.concat([encoder_hidden_states_image, encoder_hidden_states], dim=1)
-
-        if hasattr(self, "controlnet"):
+        if controlnet_inputs is not None:
             ### additional infos ###
-            add_infos = {
-                "extrinsics": extrinsics,
-                "intrinsics": intrinsics,
-                "patches_x": post_patch_width,
-                "patches_y": post_patch_height,
-                "image_width": image_width,
-                "image_height": image_height,
-            }
+            add_infos = self._make_controlnet_add_infos(
+                extrinsics=extrinsics,
+                intrinsics=intrinsics,
+                post_patch_width=post_patch_width,
+                post_patch_height=post_patch_height,
+                image_width=image_width,
+                image_height=image_height,
+            )
 
-            ### controlnet encoding ###
-            if self.sp_size > 1:
-                assert controlnet_inputs.shape[1] % self.sp_size == 0
-                controlnet_inputs = torch.chunk(controlnet_inputs, self.sp_size, dim=1)[parallel_dims.sp_rank]
-                controlnet_rotary_emb = (torch.chunk(controlnet_rotary_emb[0], self.sp_size, dim=1)[parallel_dims.sp_rank],
-                                         torch.chunk(controlnet_rotary_emb[1], self.sp_size, dim=1)[parallel_dims.sp_rank])
-
-            with torch.autocast("cuda", dtype=self.dtype, enabled=True):
-                if "5B" in self.controlnet_cfg.get("base_model", ""):
-                    controlnet_states = self.controlnet(hidden_states=controlnet_inputs, temb=temb[:, -1], rotary_emb=controlnet_rotary_emb, **add_infos)
-                else:
-                    controlnet_states = self.controlnet(hidden_states=controlnet_inputs, temb=temb, rotary_emb=controlnet_rotary_emb, **add_infos)
+            controlnet_states = self._run_controlnet(
+                controlnet_inputs=controlnet_inputs,
+                controlnet_rotary_emb=controlnet_rotary_emb,
+                temb=temb,
+                add_infos=add_infos,
+                parallel_dims=parallel_dims,
+                use_5b_last_temb=True,
+            )
             ### controlnet encoding over ###
         else:
             controlnet_states = []
@@ -300,40 +504,19 @@ class WorldStereoModel(WanTransformer3DModel):
             if i < len(controlnet_states):
                 hidden_states += controlnet_states[i]
 
-        # 5. Output norm, projection & unpatchify
-        if temb.ndim == 3:
-            # batch_size, seq_len, inner_dim (wan 2.2 ti2v)
-            shift, scale = (self.scale_shift_table.unsqueeze(0) + temb.unsqueeze(2)).chunk(2, dim=2)
-            shift = shift.squeeze(2)
-            scale = scale.squeeze(2)
-            if self.sp_size > 1:
-                shift = torch.chunk(shift, self.sp_size, dim=1)[parallel_dims.sp_rank]
-                scale = torch.chunk(scale, self.sp_size, dim=1)[parallel_dims.sp_rank]
-        else:
-            # batch_size, inner_dim
-            shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
-
-        # Move the shift and scale tensors to the same device as hidden_states.
-        # When using multi-GPU inference via accelerate these will be on the
-        # first device rather than the last device, which hidden_states ends up on.
-        shift = shift.to(hidden_states.device)
-        scale = scale.to(hidden_states.device)
-
-        hidden_states = (self.norm_out(hidden_states.float()) * (1 + scale) + shift).type_as(hidden_states)
-        hidden_states = self.proj_out(hidden_states)
-
-        if self.sp_size > 1:
-            hidden_states = all_gather(hidden_states, dim=1, group=parallel_dims.sp_group)
-
-        hidden_states = hidden_states.reshape(
-            batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
+        output = self._apply_output_projection(
+            hidden_states=hidden_states,
+            temb=temb,
+            parallel_dims=parallel_dims,
+            batch_size=batch_size,
+            post_patch_num_frames=post_patch_num_frames,
+            post_patch_height=post_patch_height,
+            post_patch_width=post_patch_width,
+            p_t=p_t,
+            p_h=p_h,
+            p_w=p_w,
         )
-        hidden_states = hidden_states.permute(0, 7, 1, 4, 2, 5, 3, 6)
-        output = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
-
-        if USE_PEFT_BACKEND:
-            # remove `lora_scale` from each PEFT layer
-            unscale_lora_layers(self, lora_scale)
+        self._unscale_lora_if_needed(lora_scale)
 
         if not return_dict:
             return (output,)
@@ -341,7 +524,7 @@ class WorldStereoModel(WanTransformer3DModel):
         return Transformer2DModelOutput(sample=output)
 
 
-class WorldStereoRefSModel(WanTransformer3DModel):
+class WorldStereoRefSModel(_WorldStereoCommonMixin, WanTransformer3DModel):
     r"""
     A Transformer model for video-like data used in the Wan model.
     """
@@ -368,31 +551,27 @@ class WorldStereoRefSModel(WanTransformer3DModel):
             base_model="",
             **kwargs
     ) -> None:
-        super().__init__(patch_size=patch_size,
-                         num_attention_heads=num_attention_heads,
-                         attention_head_dim=attention_head_dim,
-                         in_channels=in_channels,
-                         out_channels=out_channels,
-                         text_dim=text_dim,
-                         freq_dim=freq_dim,
-                         ffn_dim=ffn_dim,
-                         num_layers=num_layers,
-                         cross_attn_norm=cross_attn_norm,
-                         qk_norm=qk_norm,
-                         eps=eps,
-                         image_dim=image_dim,
-                         added_kv_proj_dim=added_kv_proj_dim,
-                         rope_max_seq_len=rope_max_seq_len,
-                         pos_embed_seq_len=pos_embed_seq_len)
-
-        self.controlnet_cfg = controlnet_cfg
-        if self.controlnet_cfg is not None:
-            self.controlnet_cfg.base_model = base_model
-        self.in_channels = in_channels
-        self.patch_size = patch_size
+        self._init_worldstereo_base(
+            patch_size=patch_size,
+            num_attention_heads=num_attention_heads,
+            attention_head_dim=attention_head_dim,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            text_dim=text_dim,
+            freq_dim=freq_dim,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+            cross_attn_norm=cross_attn_norm,
+            qk_norm=qk_norm,
+            eps=eps,
+            image_dim=image_dim,
+            added_kv_proj_dim=added_kv_proj_dim,
+            rope_max_seq_len=rope_max_seq_len,
+            pos_embed_seq_len=pos_embed_seq_len,
+            controlnet_cfg=controlnet_cfg,
+            base_model=base_model,
+        )
         self.ref_patch_size = patch_size
-        self.rope_max_seq_len = rope_max_seq_len
-        self.sp_size = 1
 
         inner_dim = num_attention_heads * attention_head_dim
         self.inner_dim = inner_dim
@@ -406,9 +585,7 @@ class WorldStereoRefSModel(WanTransformer3DModel):
         )
 
     def build_controlnet(self, load_uni3c=False, freeze_backbone=True):
-        # controlnet
-        self.controlnet = WanXControlNet(self.controlnet_cfg)
-        self.controlnet_rope = WanRotaryPosEmbed(self.controlnet_cfg.dim // self.controlnet_cfg.num_heads, self.patch_size, self.rope_max_seq_len)
+        self._init_controlnet_base()
         if self.controlnet_cfg.get("ref_embedding", False):
             # Embedding layer for ref_index, zero initialized
             self.ref_index_embedding = nn.Embedding(21, self.inner_dim)
@@ -427,38 +604,8 @@ class WorldStereoRefSModel(WanTransformer3DModel):
         else:
             self.camera_embedding = None
 
-        if not load_uni3c:  # initialize new controlnet
-            # Store all weights under self.controlnet for convenience
-            self.controlnet.controlnet_patch_embedding = nn.Conv3d(
-                self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
-            )
-            self.controlnet.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
-            # copy weight to controlnet patch embedding
-            self.controlnet.controlnet_patch_embedding.weight.data.copy_(self.patch_embedding.weight.data.clone())
-            self.controlnet.controlnet_patch_embedding.bias.data.copy_(self.patch_embedding.bias.data.clone())
-
-        else:
-            # Hardcoded for backward compatibility with open-source uni3c
-            self.controlnet_patch_embedding = nn.Conv3d(
-                self.in_channels, self.controlnet_cfg.conv_out_dim, kernel_size=self.patch_size, stride=self.patch_size
-            )
-            self.controlnet_mask_embedding = MaskCamEmbed(self.controlnet_cfg)
-            model_path = hf_hub_download(repo_id="ewrfcas/Uni3C", filename="controlnet.pth", repo_type="model")  # download weights from huggingface
-            state_dict = torch.load(model_path, map_location="cpu")
-
-            missing_keys, unexpected_keys = self.load_state_dict(state_dict, strict=False)
-            # Copy weights back to self.controlnet
-            self.controlnet.controlnet_patch_embedding = copy.deepcopy(self.controlnet_patch_embedding)
-            self.controlnet.controlnet_mask_embedding = copy.deepcopy(self.controlnet_mask_embedding)
-            del self.controlnet_patch_embedding
-            del self.controlnet_mask_embedding
-            # print("Missing keys:", missing_keys)
-            rank0_log(f"Unexpected keys: {unexpected_keys}")
-
-        if freeze_backbone:
-            # set controlnet trainable only
-            self.requires_grad_(False)
-            self.controlnet.requires_grad_(True)
+        self._load_or_create_controlnet_embeddings(load_uni3c)
+        self._freeze_backbone_for_controlnet(freeze_backbone)
 
     def forward(
             self,
@@ -483,46 +630,31 @@ class WorldStereoRefSModel(WanTransformer3DModel):
         :param camera_embedding: [b,6,f,h,w]
         """
         parallel_dims = get_parallel_state()
-        if attention_kwargs is not None:
-            attention_kwargs = attention_kwargs.copy()
-            lora_scale = attention_kwargs.pop("scale", 1.0)
-        else:
-            lora_scale = 1.0
+        attention_kwargs, lora_scale = self._prepare_lora_scale(attention_kwargs, use_rank0_warning=True)
 
-        if USE_PEFT_BACKEND:
-            # weight the lora layers by setting `lora_scale` for each PEFT layer
-            scale_lora_layers(self, lora_scale)
-        else:
-            if attention_kwargs is not None and attention_kwargs.get("scale", None) is not None:
-                rank0_log("Passing `scale` via `attention_kwargs` when not using the PEFT backend is ineffective.", level="WARNING")
+        (
+            batch_size,
+            num_channels,
+            num_frames,
+            height,
+            width,
+            p_t,
+            p_h,
+            p_w,
+            post_patch_num_frames,
+            post_patch_height,
+            post_patch_width,
+            image_width,
+            image_height,
+        ) = self._get_patch_context(hidden_states)
 
-        batch_size, num_channels, num_frames, height, width = hidden_states.shape
-        p_t, p_h, p_w = self.config.patch_size
-        post_patch_num_frames = num_frames // p_t
-        post_patch_height = height // p_h
-        post_patch_width = width // p_w
-        if self.controlnet_cfg is None or "5B" not in self.controlnet_cfg.get("base_model", ""):
-            image_width, image_height = width * 8, height * 8
-        else:
-            image_width, image_height = width * 16, height * 16
-
-        if hasattr(self, "controlnet"):
-            ### process controlnet inputs ###
-            render_latent = torch.cat([hidden_states[:, :20], render_latent], dim=1)
-            controlnet_rotary_emb = self.controlnet_rope(render_latent)
-            controlnet_inputs = self.controlnet.controlnet_patch_embedding(render_latent)
-            controlnet_inputs = controlnet_inputs.flatten(2).transpose(1, 2)
-
-            # additional inputs (mask, camera embedding)
-            if camera_embedding is not None:
-                add_inputs = torch.cat([render_mask, camera_embedding], dim=1)
-            else:
-                add_inputs = render_mask
-            add_inputs = self.controlnet.controlnet_mask_embedding(add_inputs)
-            controlnet_inputs = controlnet_inputs + add_inputs
-            ### process controlnet inputs over ###
-        else:
-            controlnet_inputs = None
+        controlnet_inputs, controlnet_rotary_emb = self._prepare_controlnet_inputs(
+            hidden_states=hidden_states,
+            render_latent=render_latent,
+            render_mask=render_mask,
+            camera_embedding=camera_embedding,
+            concat_hidden_prefix=True,
+        )
 
         rope_tmp = torch.cat([hidden_states, hidden_states], dim=-1)
         tmp_rotary_emb = self.rope(rope_tmp)
@@ -571,46 +703,29 @@ class WorldStereoRefSModel(WanTransformer3DModel):
                 ref_cam_emb = einops.rearrange(ref_cam_emb, "b f h w c -> b (f h w) c")
                 reference_latent = reference_latent + ref_cam_emb
 
-        # timestep shape: batch_size, or batch_size, seq_len (wan 2.2 ti2v)
-        if timestep.ndim == 2:
-            ts_seq_len = timestep.shape[1]
-            timestep = timestep.flatten()  # batch_size * seq_len
-        else:
-            ts_seq_len = None
-
-        temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = self.condition_embedder(
-            timestep, encoder_hidden_states, encoder_hidden_states_image, timestep_seq_len=ts_seq_len
+        temb, timestep_proj, encoder_hidden_states, ts_seq_len = self._embed_timestep_and_conditions(
+            timestep, encoder_hidden_states, encoder_hidden_states_image
         )
-        if ts_seq_len is not None:
-            # batch_size, seq_len, 6, inner_dim
-            timestep_proj = timestep_proj.unflatten(2, (6, -1))
-        else:
-            # batch_size, 6, inner_dim
-            timestep_proj = timestep_proj.unflatten(1, (6, -1))
 
-        if encoder_hidden_states_image is not None:
-            encoder_hidden_states = torch.concat([encoder_hidden_states_image, encoder_hidden_states], dim=1)
-
-        if hasattr(self, "controlnet"):
+        if controlnet_inputs is not None:
             ### additional infos ###
-            add_infos = {
-                "extrinsics": None,
-                "intrinsics": None,
-                "patches_x": post_patch_width,
-                "patches_y": post_patch_height,
-                "image_width": image_width,
-                "image_height": image_height,
-            }
+            add_infos = self._make_controlnet_add_infos(
+                extrinsics=None,
+                intrinsics=None,
+                post_patch_width=post_patch_width,
+                post_patch_height=post_patch_height,
+                image_width=image_width,
+                image_height=image_height,
+            )
 
-            ### controlnet encoding ###
-            if self.sp_size > 1:
-                assert controlnet_inputs.shape[1] % self.sp_size == 0
-                controlnet_inputs = torch.chunk(controlnet_inputs, self.sp_size, dim=1)[parallel_dims.sp_rank]
-                controlnet_rotary_emb = (torch.chunk(controlnet_rotary_emb[0], self.sp_size, dim=1)[parallel_dims.sp_rank],
-                                         torch.chunk(controlnet_rotary_emb[1], self.sp_size, dim=1)[parallel_dims.sp_rank])
-
-            with torch.autocast("cuda", dtype=self.dtype, enabled=True):
-                controlnet_states = self.controlnet(hidden_states=controlnet_inputs, temb=temb, rotary_emb=controlnet_rotary_emb, **add_infos)
+            controlnet_states = self._run_controlnet(
+                controlnet_inputs=controlnet_inputs,
+                controlnet_rotary_emb=controlnet_rotary_emb,
+                temb=temb,
+                add_infos=add_infos,
+                parallel_dims=parallel_dims,
+                use_5b_last_temb=False,
+            )
             ### controlnet encoding over ###
         else:
             controlnet_states = []
@@ -647,40 +762,19 @@ class WorldStereoRefSModel(WanTransformer3DModel):
             if i < len(controlnet_states):
                 hidden_states += controlnet_states[i]
 
-        # 5. Output norm, projection & unpatchify
-        if temb.ndim == 3:
-            # batch_size, seq_len, inner_dim (wan 2.2 ti2v)
-            shift, scale = (self.scale_shift_table.unsqueeze(0) + temb.unsqueeze(2)).chunk(2, dim=2)
-            shift = shift.squeeze(2)
-            scale = scale.squeeze(2)
-            if self.sp_size > 1:
-                shift = torch.chunk(shift, self.sp_size, dim=1)[parallel_dims.sp_rank]
-                scale = torch.chunk(scale, self.sp_size, dim=1)[parallel_dims.sp_rank]
-        else:
-            # batch_size, inner_dim
-            shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
-
-        # Move the shift and scale tensors to the same device as hidden_states.
-        # When using multi-GPU inference via accelerate these will be on the
-        # first device rather than the last device, which hidden_states ends up on.
-        shift = shift.to(hidden_states.device)
-        scale = scale.to(hidden_states.device)
-
-        hidden_states = (self.norm_out(hidden_states.float()) * (1 + scale) + shift).type_as(hidden_states)
-        hidden_states = self.proj_out(hidden_states)
-
-        if self.sp_size > 1:
-            hidden_states = all_gather(hidden_states, dim=1, group=parallel_dims.sp_group)
-
-        hidden_states = hidden_states.reshape(
-            batch_size, post_patch_num_frames, post_patch_height, post_patch_width, p_t, p_h, p_w, -1
+        output = self._apply_output_projection(
+            hidden_states=hidden_states,
+            temb=temb,
+            parallel_dims=parallel_dims,
+            batch_size=batch_size,
+            post_patch_num_frames=post_patch_num_frames,
+            post_patch_height=post_patch_height,
+            post_patch_width=post_patch_width,
+            p_t=p_t,
+            p_h=p_h,
+            p_w=p_w,
         )
-        hidden_states = hidden_states.permute(0, 7, 1, 4, 2, 5, 3, 6)
-        output = hidden_states.flatten(6, 7).flatten(4, 5).flatten(2, 3)
-
-        if USE_PEFT_BACKEND:
-            # remove `lora_scale` from each PEFT layer
-            unscale_lora_layers(self, lora_scale)
+        self._unscale_lora_if_needed(lora_scale)
 
         if not return_dict:
             return (output,)
