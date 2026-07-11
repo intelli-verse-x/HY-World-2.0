@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hy-world-worker
+  namespace: aicart
+  labels:
+    app: hy-world-worker
+    workload-type: gpu
+spec:
+  replicas: 0            # scaled by KEDA (worldgen-scaler), 0 <-> 1
+  selector:
+    matchLabels:
+      app: hy-world-worker
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+      labels:
+        app: hy-world-worker
+        workload-type: gpu
+    spec:
+      serviceAccountName: ssm-access
+      terminationGracePeriodSeconds: 120
+      nodeSelector:
+        gpu-class: multi-24gb      # gpu-workloads-multi nodepool (4-GPU spot)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values: [g6.12xlarge, g5.12xlarge]
+      tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      initContainers:
+      # Same pattern as vllm-chat's s3-model-sync: hydrate the HF cache on the
+      # scratch PVC from the S3 mirror (no-op when already warm). Uses the S3
+      # gateway endpoint, no NAT.
+      - name: s3-model-sync
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
+        command:
+        - sh
+        - -c
+        - |
+          set -u
+          SRC=s3://intelli-verse-x-media/models/hy-world/hf
+          DST=/root/.cache/huggingface
+          aws configure set default.s3.max_concurrent_requests 32
+          if aws s3 ls "$SRC/" >/dev/null 2>&1; then
+            echo "Syncing $SRC -> $DST"
+            time aws s3 sync "$SRC" "$DST" --only-show-errors && echo "S3 model sync OK" \
+              || echo "WARN: s3 sync failed; workers will fall back to HF download via NAT"
+          else
+            echo "WARN: $SRC not mirrored yet; workers will fall back to HF download via NAT"
+          fi
+        resources:
+          requests: {cpu: "2", memory: 1Gi}
+          limits: {cpu: "8", memory: 4Gi}
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: scratch
+          subPath: hf
+      containers:
+      - name: worker
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keda-redis-auth
+              key: password
+        - name: VLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: LITELLM_MASTER_KEY
+        - name: AWS_S3_BUCKET_NAME
+          value: intelli-verse-x-media
+        - name: AWS_REGION
+          value: us-east-1
+        - name: SAM3_REPO_ID           # facebook/sam3 is HF-gated; ungated mirror
+          value: DiffusionWave/sam3
+        - name: VLM_MODEL
+          value: gemini/gemini-2.5-flash
+        - name: IMAGE_MODEL
+          value: gemini/gemini-3.1-flash-image
+        - name: SCENES_DIR
+          value: /workspace/scenes
+        - name: MAX_JOB_SECONDS
+          value: "16200"
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: expandable_segments:True
+        resources:
+          requests:
+            cpu: "16"
+            memory: 96Gi
+            nvidia.com/gpu: "4"
+          limits:
+            cpu: "40"
+            memory: 160Gi
+            nvidia.com/gpu: "4"
+        volumeMounts:
+        - mountPath: /root/.cache/huggingface
+          name: scratch
+          subPath: hf
+        - mountPath: /workspace/scenes
+          name: scratch
+          subPath: scenes
+        - mountPath: /dev/shm
+          name: shm
+      volumes:
+      - name: scratch
+        persistentVolumeClaim:
+          claimName: scratch-mirror-hy-world
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Gi

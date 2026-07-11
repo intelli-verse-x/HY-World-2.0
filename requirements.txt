@@ -17,7 +17,9 @@ openai
 easydict
 scipy==1.14.1
 timm==1.0.11
-cupy==13.6.0
+# cupy==13.6.0 builds from source without a CUDA wheel; cupy-cuda12x is the
+# prebuilt CUDA 12.x wheel of the same version (Intelliverse deploy change).
+cupy-cuda12x==13.6.0
 
 # Vision & video
 Pillow

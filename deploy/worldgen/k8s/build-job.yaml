@@ -1,0 +1,88 @@
+# One-shot in-cluster image build (rootless BuildKit) — local Docker on the
+# dev laptop is arm64 macOS; compiling the CUDA extensions under qemu would
+# take hours, so the image is built on an amd64 CPU node instead.
+#
+# Prereqs (created by the deploy runbook, see README.md):
+#   - build context tar at s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz
+#   - secret hy-world-ecr-push: dockerconfigjson with a fresh
+#     `aws ecr get-login-password` token (valid 12 h)
+#   - PVC hy-world-build-ws (150Gi gp3) as BuildKit workspace
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hy-world-build-ws
+  namespace: aicart
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 150Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hy-world-image-build
+  namespace: aicart
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: hy-world-image-build
+    spec:
+      serviceAccountName: ssm-access
+      restartPolicy: Never
+      initContainers:
+      - name: fetch-context
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
+        command:
+        - sh
+        - -c
+        - |
+          set -eu
+          rm -rf /workspace/ctx && mkdir -p /workspace/ctx
+          aws s3 cp s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz /tmp/ctx.tgz
+          tar -xzf /tmp/ctx.tgz -C /workspace/ctx
+          chmod -R a+rwX /workspace
+          ls /workspace/ctx
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        resources:
+          requests: {cpu: 500m, memory: 512Mi}
+      containers:
+      - name: buildkit
+        image: moby/buildkit:v0.16.0-rootless
+        command:
+        - buildctl-daemonless.sh
+        args:
+        - build
+        - --frontend=dockerfile.v0
+        - --local=context=/workspace/ctx
+        - --local=dockerfile=/workspace/ctx/deploy/worldgen
+        - --opt=filename=Dockerfile
+        - --output=type=image,name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1,push=true
+        env:
+        - name: BUILDKITD_FLAGS
+          value: --oci-worker-no-process-sandbox --root /workspace/buildkit
+        - name: DOCKER_CONFIG
+          value: /workspace/.docker
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: Unconfined
+        resources:
+          requests: {cpu: "3", memory: 10Gi}
+          limits: {cpu: "4", memory: 14Gi}
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        - {mountPath: /workspace/.docker/config.json, name: ecr-auth, subPath: .dockerconfigjson}
+      volumes:
+      - name: ws
+        persistentVolumeClaim:
+          claimName: hy-world-build-ws
+      - name: ecr-auth
+        secret:
+          secretName: hy-world-ecr-push

@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import os
 
 import numpy as np
 from openai import OpenAI
@@ -147,7 +148,7 @@ def get_qwen_caption_format(task_type, sampled_images=None, desc_str_insert=None
 
 
 def get_traj_caption(LLM_ADDR, LLM_PORT, MODEL_NAME, traj_path, sample_count=8):
-    client = OpenAI(api_key="EMPTY", base_url=f"http://{LLM_ADDR}:{LLM_PORT}/v1")
+    client = OpenAI(api_key=os.environ.get("VLM_API_KEY", "EMPTY"), base_url=f"http://{LLM_ADDR}:{LLM_PORT}/v1")
     prompt_text = ("Please generate a descriptive caption for the provided video, focusing strictly on the visual content of the scene while ignoring rendering artifacts. "
                    "1. Initial Scene Description: Start by providing a detailed description of the first frame. Specifically analyze the landscape, the style and material of the huts/tents, "
                    "the campfire, the texture of the ground, and the distant mountain range. 2. Camera Movement & New Elements: Briefly describe the camera movement "

@@ -23,7 +23,8 @@ from src.sp_utils.parallel_states import initialize_parallel_state
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 timer = Timer()
 
-SAM3_REPO_ID = "facebook/sam3"
+# facebook/sam3 is gated on HF; allow pointing at an ungated mirror via env.
+SAM3_REPO_ID = os.environ.get("SAM3_REPO_ID", "facebook/sam3")
 MOGE_ID = "Ruicheng/moge-2-vitl-normal"
 
 if __name__ == '__main__':

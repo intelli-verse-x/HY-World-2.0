@@ -1,0 +1,17 @@
+# Model-weight scratch mirror for hy-world-worker, following the
+# scratch-mirror-vllm-* pattern: a per-service gp3 volume holding the HF cache,
+# populated from the S3 mirror by an initContainer (or pre-warmed by the
+# stage-weights job). ~190 GB of weights + scene scratch space.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch-mirror-hy-world
+  namespace: aicart
+  labels:
+    app: hy-world-worker
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 300Gi
