@@ -1,0 +1,123 @@
+# Worldgen watchdog — self-driving monitor for the hy-world-worker pipeline.
+# Every 10 min: detects newly-landed world artifacts in S3 and posts a Discord
+# milestone, and (belt-and-braces next to KEDA) scales the worker deployment to
+# zero once all five production worlds are complete and nothing is running.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worldgen-watchdog
+  namespace: aicart
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: worldgen-watchdog
+  namespace: aicart
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: worldgen-watchdog
+  namespace: aicart
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: worldgen-watchdog
+subjects:
+- kind: ServiceAccount
+  name: worldgen-watchdog
+  namespace: aicart
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worldgen-watchdog
+  namespace: aicart
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        spec:
+          serviceAccountName: worldgen-watchdog
+          restartPolicy: Never
+          tolerations:
+          - {key: arch, operator: Equal, value: arm64, effect: NoSchedule}
+          containers:
+          - name: watchdog
+            image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
+            command:
+            - sh
+            - -c
+            - |
+              set -u
+              BUCKET=intelliverse-world-templates
+              WORLDS="world-gameshow world-manor world-museum world-nightmarket world-lodge"
+              STATE=s3://$BUCKET/worldgen/.watchdog-state.txt
+              HOOK="$DISCORD_WEBHOOK"
+              VIEWER=https://worlds.quizverse.world
+
+              post() { curl -s -X POST -H 'Content-Type: application/json' \
+                       -d "{\"content\":\"WORLDGEN: $1\"}" "$HOOK" >/dev/null 2>&1 || true; }
+
+              aws s3 cp "$STATE" /tmp/state.txt >/dev/null 2>&1 || : > /tmp/state.txt
+              done_count=0
+              for w in $WORLDS; do
+                if aws s3api head-object --bucket $BUCKET --key "worldgen/$w/world.splat" >/dev/null 2>&1; then
+                  done_count=$((done_count+1))
+                  if ! grep -q "^$w$" /tmp/state.txt; then
+                    echo "$w" >> /tmp/state.txt
+                    post "🌍 \`$w\` artifacts landed — $VIEWER?src=https://$BUCKET.s3.us-east-1.amazonaws.com/worldgen/$w/world.splat"
+                  fi
+                fi
+              done
+              echo "done_count=$done_count"
+
+              if [ "$done_count" -eq 5 ]; then
+                TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                API=https://kubernetes.default.svc
+                CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                REPLICAS=$(curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" \
+                  $API/apis/apps/v1/namespaces/aicart/deployments/hy-world-worker/scale \
+                  | grep -o '"replicas": *[0-9]*' | head -1 | grep -o '[0-9]*')
+                echo "worker replicas=$REPLICAS"
+                if [ "${REPLICAS:-0}" -gt 0 ]; then
+                  curl -s --cacert $CA -X PATCH \
+                    -H "Authorization: Bearer $TOKEN" \
+                    -H "Content-Type: application/merge-patch+json" \
+                    $API/apis/apps/v1/namespaces/aicart/deployments/hy-world-worker/scale \
+                    -d '{"spec":{"replicas":0}}' >/dev/null
+                  post "✅ all five worlds complete — scaled hy-world-worker to zero"
+                fi
+                if ! grep -q "^ALL_DONE$" /tmp/state.txt; then
+                  echo "ALL_DONE" >> /tmp/state.txt
+                  post "🏁 all five production worlds are live in S3 (worldgen/ prefix), pipeline idle"
+                fi
+              fi
+              aws s3 cp /tmp/state.txt "$STATE" >/dev/null 2>&1
+              echo "watchdog OK"
+            env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: {secretKeyRef: {name: intelliverse-ai-ssm-params, key: AWS_ACCESS_KEY_ID}}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: {secretKeyRef: {name: intelliverse-ai-ssm-params, key: AWS_SECRET_ACCESS_KEY}}
+            - name: DISCORD_WEBHOOK
+              value: "https://discord.com/api/webhooks/1525619664992997458/i6nHbWHuSMd8xA4mAGJYUEOJ40EaINrVhqmBNdUxD2VksXSublNPmYVo8pJLH-Po85UF"
+            resources:
+              requests: {cpu: 50m, memory: 64Mi}
+              limits: {cpu: 200m, memory: 128Mi}
