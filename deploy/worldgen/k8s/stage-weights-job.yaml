@@ -66,8 +66,8 @@ spec:
             s3://intelli-verse-x-media/models/hy-world/hf --only-show-errors
           echo "=== done"
         resources:
-          requests: {cpu: "3", memory: 6Gi}
-          limits: {cpu: "4", memory: 10Gi}
+          requests: {cpu: "2", memory: 5Gi}
+          limits: {cpu: "3500m", memory: 10Gi}
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: scratch
