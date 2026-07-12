@@ -74,8 +74,8 @@ spec:
           seccompProfile:
             type: Unconfined
         resources:
-          requests: {cpu: "3", memory: 10Gi}
-          limits: {cpu: "4", memory: 14Gi}
+          requests: {cpu: "2", memory: 9Gi}
+          limits: {cpu: "3500m", memory: 13Gi}
         volumeMounts:
         - {mountPath: /workspace, name: ws}
         - {mountPath: /workspace/.docker/config.json, name: ecr-auth, subPath: .dockerconfigjson}
