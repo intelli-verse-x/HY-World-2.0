@@ -61,7 +61,7 @@ the single owner of the worldgen pipeline from here.
 3. Apply `deployment.yaml` + `scaledobject.yaml` (replicas stay 0).
 4. Smoke test: LPUSH the library prompt (exact command in
    `deploy/worldgen/README.md`), monitor logs, verify artifacts under
-   `s3://intelli-verse-x-media/worldgen/<jobId>/`, confirm scale-to-zero.
+   `s3://intelliverse-world-templates/worldgen/<jobId>/`, confirm scale-to-zero.
 
 ## Known issues / risks
 

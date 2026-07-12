@@ -21,8 +21,8 @@ hy-world-worker  (4x 24GB GPU spot node: g6.12xlarge / g5.12xlarge)
   5. world_gs_trainer   3DGS optimization, ply/spz/mesh export
         │
         ▼
-s3://intelli-verse-x-media/worldgen/{jobId}/   (gs/, previews/, panorama.png,
-                                                manifest.json)
+s3://intelliverse-world-templates/worldgen/{jobId}/   (gs/, previews/, panorama.png,
+                                                       manifest.json)
 RPUSH pipeline:done:worldgen {result JSON}
 ```
 
