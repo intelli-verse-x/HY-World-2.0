@@ -10,9 +10,16 @@ import torch
 try:
     from flash_attn_interface import flash_attn_func as flash_attn_func_v3
     _USE_FLASH_ATTN_V3 = True
+    _HAS_FLASH_ATTN = True
 except ImportError:
-    from flash_attn.flash_attn_interface import flash_attn_func as flash_attn_func_v2
     _USE_FLASH_ATTN_V3 = False
+    try:
+        from flash_attn.flash_attn_interface import flash_attn_func as flash_attn_func_v2
+        _HAS_FLASH_ATTN = True
+    except ImportError:
+        # No flash-attn available (e.g. pre-Hopper GPUs without a prebuilt
+        # wheel). Fall back to F.scaled_dot_product_attention everywhere.
+        _HAS_FLASH_ATTN = False
 from ...comm.padding import minimal_pad_to_divisible, depad_by_length, pad_by_length
 import torch.distributed as dist
 from ...comm.communication import _All2All, _Allgather
@@ -55,7 +62,7 @@ class Attention(nn.Module):
         return q, k, v, B, N, C
 
     def _apply_attention(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
-        if q.dtype==torch.bfloat16 or q.dtype==torch.float16:
+        if _HAS_FLASH_ATTN and (q.dtype==torch.bfloat16 or q.dtype==torch.float16):
             if q.is_contiguous():
                 q = q.transpose(1,2)
             else:

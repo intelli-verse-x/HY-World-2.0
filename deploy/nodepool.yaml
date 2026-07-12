@@ -1,0 +1,47 @@
+# Dedicated worldgen GPU pool — tainted so ONLY hy-world-worker lands here.
+# Cheapest-viable-first: 24GB cards (g6/g5 4xlarge, 64GB RAM) then
+# L40S 48GB (g6e.2xl/4xl) for bf16 headroom. Spot only.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: worldgen-gpu
+spec:
+  disruption:
+    budgets:
+    - nodes: 100%
+    consolidateAfter: 10m
+    consolidationPolicy: WhenEmptyOrUnderutilized
+  limits:
+    cpu: "64"
+    memory: 512Gi
+    nvidia.com/gpu: "4"
+  template:
+    metadata:
+      labels:
+        workload-type: gpu
+        gpu-class: worldgen
+    spec:
+      expireAfter: 24h
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: gpu-workloads
+      requirements:
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values: ["spot"]
+      - key: kubernetes.io/arch
+        operator: In
+        values: ["amd64"]
+      - key: node.kubernetes.io/instance-type
+        operator: In
+        values:
+        - g6.4xlarge
+        - g5.4xlarge
+        - g6e.2xlarge
+        - g6e.4xlarge
+      taints:
+      - key: dedicated
+        value: worldgen
+        effect: NoSchedule
+  weight: 30

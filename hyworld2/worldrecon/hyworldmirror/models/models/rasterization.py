@@ -5,8 +5,15 @@ import torch.nn as nn
 from torch import Tensor
 from einops import rearrange
 
-from gsplat.rendering import rasterization
-from gsplat.strategy import DefaultStrategy
+try:
+    from gsplat.rendering import rasterization
+    from gsplat.strategy import DefaultStrategy
+except ImportError:
+    # gsplat is only needed for actual rasterization (training / novel-view
+    # rendering). Pure inference (is_inference=True) assembles splats without
+    # rasterizing, so allow import to succeed without gsplat installed.
+    rasterization = None
+    DefaultStrategy = None
 
 from ..utils.frustum import calculate_unprojected_mask
 from ..utils.geometry import depth_to_world_coords_points

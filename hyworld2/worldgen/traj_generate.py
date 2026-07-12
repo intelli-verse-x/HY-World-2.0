@@ -77,7 +77,8 @@ HF_CACHE_DIR = os.path.expanduser("~/.cache/huggingface/hub")
 ZIM_REPO_ID = "naver-iv/zim-anything-vitl"
 ZIM_SUBFOLDER = "zim_vit_l_2092"
 GD_REPO_ID = "IDEA-Research/grounding-dino-tiny"
-SAM3_REPO_ID = "facebook/sam3"
+# facebook/sam3 is gated on HF; allow pointing at an ungated mirror via env.
+SAM3_REPO_ID = os.environ.get("SAM3_REPO_ID", "facebook/sam3")
 MOGE_ID = "Ruicheng/moge-2-vitl-normal"
 
 
@@ -203,9 +204,9 @@ if __name__ == '__main__':
     depth_model = MoGeModel.from_pretrained(MOGE_ID).to(device).eval()
 
     # VLM & SAM3
-    client = OpenAI(api_key="EMPTY", base_url=f"http://{LLM_ADDR}:{LLM_PORT}/v1")
-    sam3_model = Sam3Model.from_pretrained("facebook/sam3").to(device)
-    sam3_processor = Sam3Processor.from_pretrained("facebook/sam3")
+    client = OpenAI(api_key=os.environ.get("VLM_API_KEY", "EMPTY"), base_url=f"http://{LLM_ADDR}:{LLM_PORT}/v1")
+    sam3_model = Sam3Model.from_pretrained(SAM3_REPO_ID).to(device)
+    sam3_processor = Sam3Processor.from_pretrained(SAM3_REPO_ID)
     print("Models Initializing over.")
 
     # Near-view rotations used by regular trajectory generation.
