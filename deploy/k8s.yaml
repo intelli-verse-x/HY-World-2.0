@@ -1,0 +1,139 @@
+# HY-World 2.0 worldgen worker — aicart namespace
+# Queue: pipeline:signal:worldgen on content-factory-redis (KEDA scale 0->N)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hy-world-worker
+  namespace: aicart
+  labels:
+    app: hy-world-worker
+    workload-type: gpu
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: hy-world-worker
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: hy-world-worker
+        workload-type: gpu
+    spec:
+      terminationGracePeriodSeconds: 60
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+        - effect: NoSchedule
+          key: dedicated
+          value: worldgen
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: karpenter.sh/nodepool
+                    operator: In
+                    values:
+                      - worldgen-gpu
+      containers:
+        - name: worker
+          image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest
+          imagePullPolicy: Always
+          env:
+            - name: REDIS_HOST
+              value: content-factory-redis.aicart.svc.cluster.local
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: content-factory-secrets
+                  key: redis-password
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: intelliverse-ai-ssm-params
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: intelliverse-ai-ssm-params
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_REGION
+              value: us-east-1
+            - name: S3_BUCKET
+              value: intelliverse-world-templates
+            - name: QUANT_MODE
+              value: "auto"
+            - name: DISCORD_WEBHOOK
+              value: "https://discord.com/api/webhooks/1525619664992997458/i6nHbWHuSMd8xA4mAGJYUEOJ40EaINrVhqmBNdUxD2VksXSublNPmYVo8pJLH-Po85UF"
+            - name: HF_HOME
+              value: /models/hf-cache
+            - name: HF_HUB_ENABLE_HF_TRANSFER
+              value: "1"
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: "expandable_segments:True"
+          resources:
+            requests:
+              cpu: "6"
+              memory: 44Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "14"
+              memory: 56Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            # staged HF weights (Qwen 55G + HY-World-2.0) on fast gp3;
+            # EFS gpu-model-cache is provisioned at only 30MiB/s — too slow.
+            - name: model-cache
+              mountPath: /models/hf-cache
+              subPath: hf
+            - name: work
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: scratch-mirror-hy-world
+        - name: work
+          emptyDir:
+            sizeLimit: 80Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: hy-world-worker-scaler
+  namespace: aicart
+spec:
+  scaleTargetRef:
+    name: hy-world-worker
+  minReplicaCount: 0
+  maxReplicaCount: 1
+  cooldownPeriod: 600
+  triggers:
+    # queued jobs
+    - type: redis
+      authenticationRef:
+        name: redis-trigger-auth
+      metadata:
+        address: content-factory-redis.aicart.svc.cluster.local:6379
+        databaseIndex: "0"
+        listName: pipeline:signal:worldgen
+        listLength: "1"
+        activationListLength: "0"
+    # in-flight job (BLMOVE target) — keeps the replica alive mid-generation
+    - type: redis
+      authenticationRef:
+        name: redis-trigger-auth
+      metadata:
+        address: content-factory-redis.aicart.svc.cluster.local:6379
+        databaseIndex: "0"
+        listName: pipeline:worldgen:processing
+        listLength: "1"
+        activationListLength: "0"
