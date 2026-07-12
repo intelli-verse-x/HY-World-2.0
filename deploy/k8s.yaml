@@ -38,6 +38,13 @@ spec:
                     operator: In
                     values:
                       - worldgen-gpu
+                  # "mixed" quant (bf16 transformer + nf4 text encoder) needs
+                  # ~45GB VRAM: only L40S (g6e) cards qualify, not L4/A10G.
+                  - key: node.kubernetes.io/instance-type
+                    operator: In
+                    values:
+                      - g6e.2xlarge
+                      - g6e.4xlarge
       containers:
         - name: worker
           image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest
@@ -64,8 +71,20 @@ spec:
               value: us-east-1
             - name: S3_BUCKET
               value: intelliverse-world-templates
+            # Full-precision pano transformer: 4-bit nf4 quantization of the
+            # 20B backbone was the fidelity bottleneck (blotchy panoramas ->
+            # mushy splats). "mixed" keeps the transformer bf16 and only
+            # quantizes the text encoder, fitting a 48GB L40S.
             - name: QUANT_MODE
-              value: "auto"
+              value: "mixed"
+            - name: PANO_STEPS
+              value: "40"
+            - name: PANO_TRUE_CFG
+              value: "7.5"
+            - name: VIEW_SIZE
+              value: "960"
+            - name: RECON_TARGET_SIZE
+              value: "952"
             - name: DISCORD_WEBHOOK
               value: "https://discord.com/api/webhooks/1525619664992997458/i6nHbWHuSMd8xA4mAGJYUEOJ40EaINrVhqmBNdUxD2VksXSublNPmYVo8pJLH-Po85UF"
             - name: HF_HOME

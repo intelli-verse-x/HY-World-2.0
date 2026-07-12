@@ -1,7 +1,8 @@
 # Worldgen watchdog — self-driving monitor for the hy-world-worker pipeline.
 # Every 10 min: detects newly-landed world artifacts in S3 and posts a Discord
-# milestone, and (belt-and-braces next to KEDA) scales the worker deployment to
-# zero once all five production worlds are complete and nothing is running.
+# milestone. Scale-down is owned solely by KEDA (queue-based): a blind
+# "all five done -> replicas=0" patch here killed later regeneration jobs
+# mid-flight every 10 minutes.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -87,21 +88,6 @@ spec:
               echo "done_count=$done_count"
 
               if [ "$done_count" -eq 5 ]; then
-                TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-                API=https://kubernetes.default.svc
-                CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-                REPLICAS=$(curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" \
-                  $API/apis/apps/v1/namespaces/aicart/deployments/hy-world-worker/scale \
-                  | grep -o '"replicas": *[0-9]*' | head -1 | grep -o '[0-9]*')
-                echo "worker replicas=$REPLICAS"
-                if [ "${REPLICAS:-0}" -gt 0 ]; then
-                  curl -s --cacert $CA -X PATCH \
-                    -H "Authorization: Bearer $TOKEN" \
-                    -H "Content-Type: application/merge-patch+json" \
-                    $API/apis/apps/v1/namespaces/aicart/deployments/hy-world-worker/scale \
-                    -d '{"spec":{"replicas":0}}' >/dev/null
-                  post "✅ all five worlds complete — scaled hy-world-worker to zero"
-                fi
                 if ! grep -q "^ALL_DONE$" /tmp/state.txt; then
                   echo "ALL_DONE" >> /tmp/state.txt
                   post "🏁 all five production worlds are live in S3 (worldgen/ prefix), pipeline idle"

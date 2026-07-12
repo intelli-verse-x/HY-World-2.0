@@ -32,7 +32,7 @@ S3_BUCKET = os.environ.get("S3_BUCKET", "intelliverse-world-templates")
 S3_PREFIX = os.environ.get("S3_PREFIX", "worldgen")
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/tmp/worldgen"))
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
-QUANT_MODE = os.environ.get("QUANT_MODE", "auto")  # auto | 4bit | bf16
+QUANT_MODE = os.environ.get("QUANT_MODE", "auto")  # auto | 4bit | mixed | bf16
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "2"))
 BLPOP_TIMEOUT = int(os.environ.get("BLPOP_TIMEOUT", "120"))
 
@@ -43,10 +43,11 @@ MIRROR_MODEL = os.environ.get("MIRROR_MODEL", "tencent/HY-World-2.0")
 
 PANO_H = int(os.environ.get("PANO_H", "960"))
 PANO_W = int(os.environ.get("PANO_W", "1952"))
-PANO_STEPS = int(os.environ.get("PANO_STEPS", "28"))
-VIEW_SIZE = int(os.environ.get("VIEW_SIZE", "768"))
+PANO_STEPS = int(os.environ.get("PANO_STEPS", "40"))          # upstream default 40
+PANO_TRUE_CFG = float(os.environ.get("PANO_TRUE_CFG", "7.5"))  # upstream default 7.5
+VIEW_SIZE = int(os.environ.get("VIEW_SIZE", "960"))
 VIEW_FOV_DEG = float(os.environ.get("VIEW_FOV_DEG", "70"))
-RECON_TARGET_SIZE = int(os.environ.get("RECON_TARGET_SIZE", "756"))
+RECON_TARGET_SIZE = int(os.environ.get("RECON_TARGET_SIZE", "952"))  # upstream default 952
 GS_MAX_POINTS = int(os.environ.get("GS_MAX_POINTS", "2000000"))
 
 VIEWER_BASE = "https://worlds.quizverse.world"
@@ -117,8 +118,13 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
     quant = resolved_quant_mode()
     t0 = time.time()
     kwargs = {"torch_dtype": torch.bfloat16}
-    if quant == "4bit":
+    if quant in ("4bit", "mixed"):
         from diffusers import PipelineQuantizationConfig
+        # "mixed": only the 7B text encoder is quantized; the 20B transformer
+        # (which paints the pixels and dominates output fidelity) stays bf16.
+        # 40GB (transformer bf16) + ~5GB (TE nf4) fits a 48GB L40S without
+        # CPU offload, so no 90GB+ host RAM requirement.
+        components = ["transformer", "text_encoder"] if quant == "4bit" else ["text_encoder"]
         kwargs["quantization_config"] = PipelineQuantizationConfig(
             quant_backend="bitsandbytes_4bit",
             quant_kwargs={
@@ -126,13 +132,13 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
                 "bnb_4bit_quant_type": "nf4",
                 "bnb_4bit_compute_dtype": torch.bfloat16,
             },
-            components_to_quantize=["transformer", "text_encoder"],
+            components_to_quantize=components,
         )
     pipe = PanoDiffusionPipeline.from_pretrained(PANO_MODEL, **kwargs)
-    if quant != "4bit":
-        pipe.enable_model_cpu_offload()
-    else:
+    if quant in ("4bit", "mixed"):
         pipe.to("cuda")
+    else:
+        pipe.enable_model_cpu_offload()
     try:
         pipe.vae.enable_tiling()
     except Exception:
@@ -152,7 +158,7 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
         width=PANO_W,
         num_inference_steps=PANO_STEPS,
         guidance_scale=1.0,
-        true_cfg_scale=4.0,
+        true_cfg_scale=PANO_TRUE_CFG,
     )
     pano.save(out_path)
     del hy, pipe

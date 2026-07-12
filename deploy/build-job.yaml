@@ -59,7 +59,7 @@ spec:
         - --local=context=/workspace/ctx
         - --local=dockerfile=/workspace/ctx/deploy
         - --opt=filename=Dockerfile
-        - --output=type=image,"name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1,970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest",push=true
+        - --output=type=image,"name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v2,970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest",push=true
         env:
         - name: BUILDKITD_FLAGS
           value: --oci-worker-no-process-sandbox --root /workspace/buildkit
