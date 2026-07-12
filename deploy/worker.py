@@ -49,6 +49,10 @@ VIEW_SIZE = int(os.environ.get("VIEW_SIZE", "960"))
 VIEW_FOV_DEG = float(os.environ.get("VIEW_FOV_DEG", "70"))
 RECON_TARGET_SIZE = int(os.environ.get("RECON_TARGET_SIZE", "952"))  # upstream default 952
 GS_MAX_POINTS = int(os.environ.get("GS_MAX_POINTS", "2000000"))
+# WorldMirror's raw gaussian scales are tuned for gsplat's rasterizer and
+# render as sub-pixel specks in .splat viewers (salt-and-pepper "mush").
+# Inflating them ~1.8x closes the gaps into continuous surfaces.
+SPLAT_SCALE_MULT = float(os.environ.get("SPLAT_SCALE_MULT", "1.8"))
 
 VIEWER_BASE = "https://worlds.quizverse.world"
 S3_HTTP_BASE = f"https://{S3_BUCKET}.s3.us-east-1.amazonaws.com"
@@ -102,9 +106,14 @@ def gen_seed_image(prompt: str, out_path: Path):
 
 
 def resolved_quant_mode():
-    # "auto" resolves to 4bit: bf16 (~57GB of weights) needs either >57GB VRAM
-    # or >57GB host RAM for CPU offload; neither fits g6e.2xl/g6.4xl nodes.
-    return "4bit" if QUANT_MODE == "auto" else QUANT_MODE
+    # "auto": pick the best mode the local GPU can hold. "mixed" (bf16
+    # transformer ~40GB + nf4 text encoder ~5GB) needs a 48GB card (L40S);
+    # 24GB cards (L4/A10G) fall back to full 4-bit.
+    if QUANT_MODE != "auto":
+        return QUANT_MODE
+    import torch
+    vram_gib = torch.cuda.get_device_properties(0).total_memory / 2**30
+    return "mixed" if vram_gib >= 44 else "4bit"
 
 
 def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
@@ -279,7 +288,7 @@ def ply_to_splat(ply_path: Path, splat_path: Path):
     rec = np.zeros(n, dtype=[("p", "<f4", 3), ("s", "<f4", 3),
                              ("c", "u1", 4), ("r", "u1", 4)])
     rec["p"] = np.stack([v["x"], v["y"], v["z"]], axis=1)
-    rec["s"] = np.exp(np.stack([v["scale_0"], v["scale_1"], v["scale_2"]], axis=1))
+    rec["s"] = np.exp(np.stack([v["scale_0"], v["scale_1"], v["scale_2"]], axis=1)) * SPLAT_SCALE_MULT
     rgb = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=1) * SH_C0 + 0.5
     rec["c"][:, :3] = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
     rec["c"][:, 3] = np.clip(opac * 255.0, 0, 255).astype(np.uint8)

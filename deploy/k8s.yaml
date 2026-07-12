@@ -38,8 +38,9 @@ spec:
                     operator: In
                     values:
                       - worldgen-gpu
-                  # "mixed" quant (bf16 transformer + nf4 text encoder) needs
-                  # ~45GB VRAM: only L40S (g6e) cards qualify, not L4/A10G.
+                  # Require 48GB L40S nodes: QUANT_MODE=auto runs the pano
+                  # transformer in bf16 there ("mixed" mode, the fidelity
+                  # fix). 24GB L4/A10G would fall back to blotchy 4-bit.
                   - key: node.kubernetes.io/instance-type
                     operator: In
                     values:
@@ -71,12 +72,10 @@ spec:
               value: us-east-1
             - name: S3_BUCKET
               value: intelliverse-world-templates
-            # Full-precision pano transformer: 4-bit nf4 quantization of the
-            # 20B backbone was the fidelity bottleneck (blotchy panoramas ->
-            # mushy splats). "mixed" keeps the transformer bf16 and only
-            # quantizes the text encoder, fitting a 48GB L40S.
+            # auto = "mixed" on 48GB cards (bf16 transformer, the fidelity
+            # fix for blotchy panoramas), 4-bit on 24GB cards.
             - name: QUANT_MODE
-              value: "mixed"
+              value: "auto"
             - name: PANO_STEPS
               value: "40"
             - name: PANO_TRUE_CFG
