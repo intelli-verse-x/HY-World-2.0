@@ -97,6 +97,11 @@ _PARAM_DEFAULTS = {
     # (neon bloom past sign borders) and clamp runaway scales.
     "opacity_floor": 0.0,
     "scale_clamp": 0.0,
+    # Dark-stray cull: drop gaussians that are BOTH near-black and weakly
+    # opaque — they read as floating dirt/holes; the shell shows through
+    # with plausible local color instead.
+    "dark_cull_lum": 0.0,     # 0-255 luminance threshold (0 = off)
+    "dark_cull_opac": 0.5,    # only cull if opacity also below this
 }
 
 
@@ -570,7 +575,8 @@ def shell_records(rec, bins_x: int = 360, rpad: float = 1.05, scale_k: float = 1
 def ply_to_splat(ply_path: Path, splat_path: Path,
                  scale_mult: float = None, max_points: int = 0,
                  shell_bins: int = 0, opacity_floor: float = 0.0,
-                 scale_clamp: float = 0.0):
+                 scale_clamp: float = 0.0,
+                 dark_cull_lum: float = 0.0, dark_cull_opac: float = 0.5):
     """Vectorized 3DGS .ply -> antimatter15 .splat conversion.
 
     Records are sorted by volume*opacity importance; `max_points` truncates to
@@ -586,6 +592,14 @@ def ply_to_splat(ply_path: Path, splat_path: Path,
         keep = 1.0 / (1.0 + np.exp(-v["opacity"].astype(np.float64))) >= opacity_floor
         log(f"opacity_floor {opacity_floor}: culled {int((~keep).sum())}/{len(v)}")
         v = v[keep]
+    if dark_cull_lum > 0.0:
+        SH_C0_ = 0.28209479177387814
+        rgbv = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=1) * SH_C0_ + 0.5
+        lum = (rgbv @ np.array([0.299, 0.587, 0.114])) * 255.0
+        op = 1.0 / (1.0 + np.exp(-v["opacity"].astype(np.float64)))
+        stray = (lum < dark_cull_lum) & (op < dark_cull_opac)
+        log(f"dark_cull lum<{dark_cull_lum} opac<{dark_cull_opac}: culled {int(stray.sum())}/{len(v)}")
+        v = v[~stray]
     n = len(v)
     opac = 1.0 / (1.0 + np.exp(-v["opacity"].astype(np.float64)))
     vol = np.exp(v["scale_0"].astype(np.float64) + v["scale_1"] + v["scale_2"])
@@ -691,7 +705,9 @@ def process_job(job: dict):
     export_kw = dict(scale_mult=cfg["splat_scale_mult"],
                      shell_bins=cfg["shell_bins"] if cfg["shell_fill"] else 0,
                      opacity_floor=cfg["opacity_floor"],
-                     scale_clamp=cfg["scale_clamp"])
+                     scale_clamp=cfg["scale_clamp"],
+                     dark_cull_lum=cfg["dark_cull_lum"],
+                     dark_cull_opac=cfg["dark_cull_opac"])
     if hd:
         ply_to_splat(ply_path, hd_path, **export_kw)
         ply_to_splat(ply_path, splat_path, max_points=cfg["gs_max_points"], **export_kw)
