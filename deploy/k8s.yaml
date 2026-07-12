@@ -84,8 +84,11 @@ spec:
               memory: 56Gi
               nvidia.com/gpu: "1"
           volumeMounts:
+            # staged HF weights (Qwen 55G + HY-World-2.0) on fast gp3;
+            # EFS gpu-model-cache is provisioned at only 30MiB/s — too slow.
             - name: model-cache
-              mountPath: /models
+              mountPath: /models/hf-cache
+              subPath: hf
             - name: work
               mountPath: /tmp
             - name: shm
@@ -93,7 +96,7 @@ spec:
       volumes:
         - name: model-cache
           persistentVolumeClaim:
-            claimName: gpu-model-cache
+            claimName: scratch-mirror-hy-world
         - name: work
           emptyDir:
             sizeLimit: 80Gi

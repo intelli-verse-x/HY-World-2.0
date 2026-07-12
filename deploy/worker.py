@@ -375,9 +375,17 @@ def main():
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_term(signum, frame):
-        # In-flight payload stays on PROCESSING_LIST; the next pod reclaims it.
+        # Requeue in-flight job explicitly: the finally block below LREMs it
+        # from PROCESSING_LIST during interpreter shutdown, so leaving it
+        # there is not enough.
         _shutdown["flag"] = True
-        log("SIGTERM: exiting (in-flight job left on processing list for reclaim)")
+        raw = _shutdown["current_job_raw"]
+        if raw:
+            try:
+                r.lpush(QUEUE_NAME, raw)
+                log("SIGTERM: requeued in-flight job")
+            except Exception:
+                pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, on_term)
