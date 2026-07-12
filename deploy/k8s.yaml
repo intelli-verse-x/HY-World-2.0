@@ -65,7 +65,7 @@ spec:
             - name: S3_BUCKET
               value: intelliverse-world-templates
             - name: QUANT_MODE
-              value: "4bit"
+              value: "auto"
             - name: DISCORD_WEBHOOK
               value: "https://discord.com/api/webhooks/1525619664992997458/i6nHbWHuSMd8xA4mAGJYUEOJ40EaINrVhqmBNdUxD2VksXSublNPmYVo8pJLH-Po85UF"
             - name: HF_HOME
@@ -111,9 +111,10 @@ spec:
   scaleTargetRef:
     name: hy-world-worker
   minReplicaCount: 0
-  maxReplicaCount: 2
+  maxReplicaCount: 1
   cooldownPeriod: 600
   triggers:
+    # queued jobs
     - type: redis
       authenticationRef:
         name: redis-trigger-auth
@@ -121,5 +122,15 @@ spec:
         address: content-factory-redis.aicart.svc.cluster.local:6379
         databaseIndex: "0"
         listName: pipeline:signal:worldgen
+        listLength: "1"
+        activationListLength: "0"
+    # in-flight job (BLMOVE target) — keeps the replica alive mid-generation
+    - type: redis
+      authenticationRef:
+        name: redis-trigger-auth
+      metadata:
+        address: content-factory-redis.aicart.svc.cluster.local:6379
+        databaseIndex: "0"
+        listName: pipeline:worldgen:processing
         listLength: "1"
         activationListLength: "0"

@@ -27,11 +27,12 @@ REDIS_HOST = os.environ.get("REDIS_HOST", "content-factory-redis.aicart.svc.clus
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD") or None
 QUEUE_NAME = os.environ.get("QUEUE_NAME", "pipeline:signal:worldgen")
+PROCESSING_LIST = os.environ.get("PROCESSING_LIST", "pipeline:worldgen:processing")
 S3_BUCKET = os.environ.get("S3_BUCKET", "intelliverse-world-templates")
 S3_PREFIX = os.environ.get("S3_PREFIX", "worldgen")
 WORK_DIR = Path(os.environ.get("WORK_DIR", "/tmp/worldgen"))
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
-QUANT_MODE = os.environ.get("QUANT_MODE", "4bit")  # 4bit | bf16
+QUANT_MODE = os.environ.get("QUANT_MODE", "auto")  # auto | 4bit | bf16
 MAX_ATTEMPTS = int(os.environ.get("MAX_ATTEMPTS", "2"))
 BLPOP_TIMEOUT = int(os.environ.get("BLPOP_TIMEOUT", "120"))
 
@@ -99,6 +100,12 @@ def gen_seed_image(prompt: str, out_path: Path):
     return out_path
 
 
+def resolved_quant_mode():
+    # "auto" resolves to 4bit: bf16 (~57GB of weights) needs either >57GB VRAM
+    # or >57GB host RAM for CPU offload; neither fits g6e.2xl/g6.4xl nodes.
+    return "4bit" if QUANT_MODE == "auto" else QUANT_MODE
+
+
 def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
     """Stage B: seed image -> 360 equirectangular panorama (HY-Pano-2.0 Qwen)."""
     import torch
@@ -107,9 +114,10 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
     from pipeline_with_qwen_image import HunyuanPanoPipeline
     from qwen_image import PanoDiffusionPipeline
 
+    quant = resolved_quant_mode()
     t0 = time.time()
     kwargs = {"torch_dtype": torch.bfloat16}
-    if QUANT_MODE == "4bit":
+    if quant == "4bit":
         from diffusers import PipelineQuantizationConfig
         kwargs["quantization_config"] = PipelineQuantizationConfig(
             quant_backend="bitsandbytes_4bit",
@@ -121,7 +129,7 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
             components_to_quantize=["transformer", "text_encoder"],
         )
     pipe = PanoDiffusionPipeline.from_pretrained(PANO_MODEL, **kwargs)
-    if QUANT_MODE != "4bit":
+    if quant != "4bit":
         pipe.enable_model_cpu_offload()
     else:
         pipe.to("cuda")
@@ -367,37 +375,42 @@ def main():
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_term(signum, frame):
+        # In-flight payload stays on PROCESSING_LIST; the next pod reclaims it.
         _shutdown["flag"] = True
-        raw = _shutdown["current_job_raw"]
-        if raw:
-            try:
-                r.lpush(QUEUE_NAME, raw)
-                log("SIGTERM: requeued in-flight job")
-            except Exception:
-                pass
+        log("SIGTERM: exiting (in-flight job left on processing list for reclaim)")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, on_term)
 
+    # Reclaim jobs a previous (killed/interrupted) worker left in flight.
+    # Safe with maxReplicaCount=1.
+    stale = r.lrange(PROCESSING_LIST, 0, -1)
+    if stale:
+        log(f"reclaiming {len(stale)} stale in-flight job(s)")
+        pipe = r.pipeline()
+        for raw in stale:
+            pipe.lrem(PROCESSING_LIST, 0, raw)
+            pipe.lpush(QUEUE_NAME, raw)
+        pipe.execute()
+
     while not _shutdown["flag"]:
         try:
-            item = r.blpop(QUEUE_NAME, timeout=BLPOP_TIMEOUT)
+            raw = r.blmove(QUEUE_NAME, PROCESSING_LIST, BLPOP_TIMEOUT, "LEFT", "RIGHT")
         except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
             log(f"redis connection error ({e}); reconnecting in 5s")
             time.sleep(5)
             continue
-        if item is None:
+        if raw is None:
             continue
-        raw = item[1]
         try:
             job = json.loads(raw)
         except Exception:
             log(f"bad payload dropped: {raw[:200]}")
+            r.lrem(PROCESSING_LIST, 0, raw)
             continue
         job_id = job.get("jobId", "unknown")
         attempts = int(job.get("attempts", 0))
         _shutdown["current_job_raw"] = raw
-        r.set(f"worldgen:processing:{job_id}", raw, ex=6 * 3600)
         log(f"picked job {job_id} (attempt {attempts + 1})")
         try:
             meta = process_job(job)
@@ -419,7 +432,7 @@ def main():
                 discord(f"❌ worldgen `{job_id}` failed after {MAX_ATTEMPTS} attempts: {err[:300]}")
         finally:
             _shutdown["current_job_raw"] = None
-            r.delete(f"worldgen:processing:{job_id}")
+            r.lrem(PROCESSING_LIST, 0, raw)
 
     log("shutdown")
 
