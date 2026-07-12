@@ -102,19 +102,21 @@ spec:
               memory: 56Gi
               nvidia.com/gpu: "1"
           volumeMounts:
-            # staged HF weights (Qwen 55G + HY-World-2.0) on fast gp3;
-            # EFS gpu-model-cache is provisioned at only 30MiB/s — too slow.
             - name: model-cache
               mountPath: /models/hf-cache
-              subPath: hf
             - name: work
               mountPath: /tmp
             - name: shm
               mountPath: /dev/shm
       volumes:
+        # HF weights (~57GB) download into node-local emptyDir on pod start
+        # (~10-15 min once per node with hf_transfer). The previous gp3 PVC
+        # (scratch-mirror-hy-world) pinned the pod to us-east-1a, which made
+        # the whole pipeline hostage to one AZ's g6e spot pool — an ICE dry
+        # spell there blocked generation for >1h while 1c had capacity.
         - name: model-cache
-          persistentVolumeClaim:
-            claimName: scratch-mirror-hy-world
+          emptyDir:
+            sizeLimit: 120Gi
         - name: work
           emptyDir:
             sizeLimit: 80Gi

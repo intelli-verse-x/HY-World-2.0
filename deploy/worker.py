@@ -144,9 +144,12 @@ def gen_panorama(prompt: str, seed_path: Path, out_path: Path):
             components_to_quantize=components,
         )
     pipe = PanoDiffusionPipeline.from_pretrained(PANO_MODEL, **kwargs)
-    if quant in ("4bit", "mixed"):
+    if quant == "4bit":
         pipe.to("cuda")
     else:
+        # mixed/bf16: keep only the active component on the GPU. With
+        # everything resident, nf4 TE + bf16 transformer ≈ 45GB and OOMs the
+        # L40S's 44.4GiB usable; offload swaps the TE out before denoising.
         pipe.enable_model_cpu_offload()
     try:
         pipe.vae.enable_tiling()
@@ -353,6 +356,11 @@ def process_job(job: dict):
         "splatBytes": splat_path.stat().st_size,
         "generator": "hy-world-2.0 (HY-Pano-2.0-Qwen + WorldMirror-2.0)",
         "finishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # Viewer camera override (splat-local space): all views are rendered
+        # from the panorama center at the origin looking +Z. Without this the
+        # viewer guesses inside/outside from the radial histogram, which
+        # misfires on deep (non-shell) reconstructions.
+        "camera": {"position": [0.0, 0.0, 0.0], "target": [0.0, 0.0, 0.12]},
     }
     meta_path = jdir / "meta.json"
     meta_path.write_text(json.dumps(meta, indent=2))
