@@ -26,15 +26,18 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
+        - effect: NoSchedule
+          key: dedicated
+          value: worldgen
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
               - matchExpressions:
-                  - key: node.kubernetes.io/instance-type
+                  - key: karpenter.sh/nodepool
                     operator: In
                     values:
-                      - g6.4xlarge
+                      - worldgen-gpu
       containers:
         - name: worker
           image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest
@@ -73,7 +76,7 @@ spec:
               value: "expandable_segments:True"
           resources:
             requests:
-              cpu: "10"
+              cpu: "6"
               memory: 44Gi
               nvidia.com/gpu: "1"
             limits:

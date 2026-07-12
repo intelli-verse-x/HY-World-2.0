@@ -360,7 +360,9 @@ def main():
     log(f"starting: queue={QUEUE_NAME} quant={QUANT_MODE} "
         f"gpu={torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE'}")
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD,
-                    decode_responses=True)
+                    decode_responses=True, socket_keepalive=True,
+                    health_check_interval=30, retry_on_timeout=True,
+                    socket_connect_timeout=10)
     r.ping()
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -378,7 +380,12 @@ def main():
     signal.signal(signal.SIGTERM, on_term)
 
     while not _shutdown["flag"]:
-        item = r.blpop(QUEUE_NAME, timeout=BLPOP_TIMEOUT)
+        try:
+            item = r.blpop(QUEUE_NAME, timeout=BLPOP_TIMEOUT)
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
+            log(f"redis connection error ({e}); reconnecting in 5s")
+            time.sleep(5)
+            continue
         if item is None:
             continue
         raw = item[1]

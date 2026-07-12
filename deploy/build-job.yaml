@@ -1,0 +1,85 @@
+# In-cluster BuildKit build of the hy-world-worker (lite pipeline) image.
+# Context: s3://intelli-verse-x-media/models/hy-world/build/context-worker.tar.gz
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hy-world-worker-build
+  namespace: aicart
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: hy-world-worker-build
+    spec:
+      serviceAccountName: ssm-access
+      restartPolicy: Never
+      tolerations:
+      - key: arch-amd64
+        value: "true"
+        effect: NoSchedule
+      initContainers:
+      - name: fetch-context
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
+        command:
+        - sh
+        - -c
+        - |
+          set -eu
+          mkdir -p /workspace
+          aws s3 cp s3://intelli-verse-x-media/models/hy-world/build/context-worker.tar.gz /workspace/ctx.tgz
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        resources:
+          requests: {cpu: 500m, memory: 512Mi}
+      - name: extract-context
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/docker/library/busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          set -eu
+          rm -rf /workspace/ctx && mkdir -p /workspace/ctx
+          tar -xzf /workspace/ctx.tgz -C /workspace/ctx
+          chmod -R a+rwX /workspace
+          ls /workspace/ctx /workspace/ctx/deploy
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        resources:
+          requests: {cpu: 250m, memory: 256Mi}
+      containers:
+      - name: buildkit
+        image: moby/buildkit:v0.16.0-rootless
+        command:
+        - buildctl-daemonless.sh
+        args:
+        - build
+        - --frontend=dockerfile.v0
+        - --local=context=/workspace/ctx
+        - --local=dockerfile=/workspace/ctx/deploy
+        - --opt=filename=Dockerfile
+        - --output=type=image,"name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1,970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:latest",push=true
+        env:
+        - name: BUILDKITD_FLAGS
+          value: --oci-worker-no-process-sandbox --root /workspace/buildkit
+        - name: DOCKER_CONFIG
+          value: /workspace/.docker
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: Unconfined
+        resources:
+          requests: {cpu: "1500m", memory: 6Gi}
+          limits: {cpu: "3500m", memory: 12Gi}
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        - {mountPath: /workspace/.docker/config.json, name: ecr-auth, subPath: .dockerconfigjson}
+      volumes:
+      - name: ws
+        persistentVolumeClaim:
+          claimName: hy-world-build-ws
+      - name: ecr-auth
+        secret:
+          secretName: hy-world-ecr-push

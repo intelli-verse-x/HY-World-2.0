@@ -8,8 +8,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/models/hf-cache \
     PYTHONPATH=/app
 
+# gcc: triton (via bitsandbytes) JIT-compiles its CUDA utils at import time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 curl && \
+        libgl1 libglib2.0-0 curl gcc python3-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir \
