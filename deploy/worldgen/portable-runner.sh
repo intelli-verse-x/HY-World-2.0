@@ -5,10 +5,13 @@ REGION="${AWS_REGION:?AWS_REGION is required}"
 IMAGE_URI="${IMAGE_URI:?IMAGE_URI is required}"
 JOB_S3_URI="${JOB_S3_URI:?JOB_S3_URI is required}"
 MODEL_BUCKET="${MODEL_BUCKET:?MODEL_BUCKET is required}"
+MODEL_BUCKET_REGION="${MODEL_BUCKET_REGION:-$REGION}"
 INSTANCE_TYPE="${INSTANCE_TYPE:?INSTANCE_TYPE is required}"
 INSTANCE_HOURLY_USD="${INSTANCE_HOURLY_USD:?INSTANCE_HOURLY_USD is required}"
 MAX_JOB_SECONDS="${MAX_JOB_SECONDS:-2400}"
 IDLE_SECONDS="${IDLE_SECONDS:-900}"
+HARD_DEADLINE_SECONDS="${HARD_DEADLINE_SECONDS:-3450}"
+GPU_COUNT="${GPU_COUNT:-1}"
 WORK_ROOT=/var/lib/hyworld
 MODEL_ROOT=/models/hf-cache
 LOG_FILE=/var/log/hyworld-portable-runner.log
@@ -31,9 +34,9 @@ terminate_self() {
 }
 trap terminate_self EXIT
 
-# The hard deadline is independent of worker health and bounds p4de compute below
-# one hour. Normal completion still waits the required 15-minute idle period.
-(sleep 3600; terminate_self) &
+# The hard deadline is independent of worker health and bounds hourly compute.
+# Normal completion may still wait the configured idle period.
+(sleep "$HARD_DEADLINE_SECONDS"; terminate_self) &
 
 dnf install -y docker awscli jq socat
 systemctl enable --now docker
@@ -41,7 +44,7 @@ nvidia-smi
 df -h /
 
 aws s3 sync "s3://${MODEL_BUCKET}/models/hy-world/hf" "$MODEL_ROOT" \
-  --region "$REGION" --only-show-errors \
+  --region "$MODEL_BUCKET_REGION" --only-show-errors \
   --exclude 'hub/*/blobs/*' --exclude 'hub/.locks/*'
 aws s3 cp "$JOB_S3_URI" "$WORK_ROOT/job.json" --region us-east-1 --only-show-errors
 
@@ -97,7 +100,7 @@ docker run -d --name worldgen --gpus all --shm-size 32g --network host \
   -e SAM3_REPO_ID=DiffusionWave/sam3 \
   -e SAM_BOX_REPO_ID=facebook/sam-vit-base \
   -e HF_HOME=/models/hf-cache -e HF_HUB_OFFLINE=1 \
-  -e NGPU=1 -e SOURCE_COMMIT=9868083 \
+  -e NGPU="$GPU_COUNT" -e SOURCE_COMMIT=4b8f0ee \
   -e IMAGE_URI="$IMAGE_URI" -e INSTANCE_TYPE="$INSTANCE_TYPE" \
   -e INSTANCE_HOURLY_USD="$INSTANCE_HOURLY_USD" \
   -e MAX_JOB_SECONDS="$MAX_JOB_SECONDS" \
@@ -116,4 +119,7 @@ docker exec redis redis-cli RPOP pipeline:done:worldgen-full |
 aws s3 cp "$WORK_ROOT/result.json" \
   "s3://intelliverse-hyworld-private-us-east-1/worldgen-full-ops/portable/results/$(jq -r .jobId "$WORK_ROOT/job.json").json" \
   --region us-east-1 --only-show-errors
+if [[ "$(jq -r .state "$WORK_ROOT/result.json")" == "failed" ]]; then
+  exit 1
+fi
 sleep "$IDLE_SECONDS"
