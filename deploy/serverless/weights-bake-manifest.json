@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "description": "Light WorldNav vision tier baked into the RunPod Serverless 4090 flex image. Chosen so cold-start reads weights from local image layers (no network volume), fits in 24 GB VRAM, and only includes ungated / permissively-licensed models. Heavy diffusion/transformer weights (Qwen editor, Wan base, WorldStereo DMD, gated tencent/HY-World-2.0) are intentionally NOT baked — they stay on the A100 pod path via the encrypted network volume (see docs/gpu-cost-strategy-runbook.md).",
+  "target": {
+    "provider": "runpod-serverless",
+    "gpu": "RTX 4090 (24 GB, flex worker)",
+    "runsStages": ["traj_generate (WorldNav)", "gen_gs_data / gs_train (3DGS <=1080p)"]
+  },
+  "bake": {
+    "facebook/sam-vit-base": {
+      "revision": "70c1a07f894ebb5b307fd9eaaee97b9dfc16068f",
+      "approxGb": 0.4,
+      "license": "Apache-2.0",
+      "baked": true
+    },
+    "IDEA-Research/grounding-dino-tiny": {
+      "revision": "a2bb814dd30d776dcf7e30523b00659f4f141c71",
+      "approxGb": 0.7,
+      "license": "Apache-2.0",
+      "baked": true
+    },
+    "Ruicheng/moge-2-vitl-normal": {
+      "revision": "b135031bae30b5ac2ae141a0e68717795ce38340",
+      "approxGb": 1.3,
+      "license": "MIT",
+      "baked": true
+    },
+    "facebook/dinov2-base": {
+      "revision": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",
+      "approxGb": 0.4,
+      "license": "Apache-2.0",
+      "baked": true
+    },
+    "DiffusionWave/sam3": {
+      "revision": "480147c4f3cf808f763e6d44f762e71616ea1cec",
+      "approxGb": 3.0,
+      "license": "ungated mirror of SAM3 (facebook/sam3 is HF-gated); byte-identical safetensors",
+      "baked": true,
+      "note": "Mirror is public/ungated so it is safe to bake. If provenance changes, fall back to runtime pull from the private cache."
+    }
+  },
+  "doNotBake": {
+    "Qwen/Qwen-Image-Edit-2509": {"approxGb": 58, "reason": "~58 GB layer; ~40 GB VRAM (needs A6000/A100); A100 pod path"},
+    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers": {"approxGb": 90, "reason": "WorldStereo base transformer; multi-GPU/80 GB; A100 pod path"},
+    "hanshanxue/WorldStereo": {"approxGb": 35, "reason": "WorldStereo DMD; A100 pod path"},
+    "tencent/HY-World-2.0": {"reason": "gated / license-controlled (geo-block); keep on private network volume, never in a portable image"}
+  },
+  "totalBakedApproxGb": 5.8
+}
