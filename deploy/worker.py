@@ -111,6 +111,9 @@ _PARAM_DEFAULTS = {
     # Crossfade the equirect wrap seam (blown-splat clusters concentrate at
     # az +-180 without it).
     "pano_seam_blend": 32,    # px, 0 = off
+    # Soft-knee RGB clamp at export: large hot gaussians survive pano tonemap
+    # but still clip to pure white in the viewer. 0 = off, 245 = v14 default.
+    "lum_clamp_ceiling": 245.0,
 }
 
 
@@ -607,11 +610,24 @@ def shell_records(rec, bins_x: int = 360, rpad: float = 1.05, scale_k: float = 1
     return shell
 
 
+def _soft_knee_rgb(rgb: np.ndarray, knee: float = 215.0, ceiling: float = 245.0) -> np.ndarray:
+    """Compress per-gaussian RGB highlights (0-255) with the same knee as pano tonemap."""
+    lum = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float64)
+    over = lum > knee
+    if not over.any():
+        return rgb
+    target = np.minimum(knee + (lum - knee) * 0.35, ceiling)
+    scale = np.ones_like(lum)
+    scale[over] = target[over] / np.maximum(lum[over], 1.0)
+    return np.clip(rgb * scale[..., None], 0, 255)
+
+
 def ply_to_splat(ply_path: Path, splat_path: Path,
                  scale_mult: float = None, max_points: int = 0,
                  shell_bins: int = 0, opacity_floor: float = 0.0,
                  scale_clamp: float = 0.0,
-                 dark_cull_lum: float = 0.0, dark_cull_opac: float = 0.5):
+                 dark_cull_lum: float = 0.0, dark_cull_opac: float = 0.5,
+                 lum_clamp_ceiling: float = 0.0):
     """Vectorized 3DGS .ply -> antimatter15 .splat conversion.
 
     Records are sorted by volume*opacity importance; `max_points` truncates to
@@ -647,7 +663,10 @@ def ply_to_splat(ply_path: Path, splat_path: Path,
     if scale_clamp > 0.0:
         rec["s"] = np.minimum(rec["s"], scale_clamp)
     rgb = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], axis=1) * SH_C0 + 0.5
-    rec["c"][:, :3] = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    rgb8 = np.clip(rgb * 255.0, 0, 255)
+    if lum_clamp_ceiling > 0.0:
+        rgb8 = _soft_knee_rgb(rgb8, knee=215.0, ceiling=lum_clamp_ceiling)
+    rec["c"][:, :3] = rgb8.astype(np.uint8)
     rec["c"][:, 3] = np.clip(opac * 255.0, 0, 255).astype(np.uint8)
     quat = np.stack([v["rot_0"], v["rot_1"], v["rot_2"], v["rot_3"]], axis=1).astype(np.float64)
     quat /= (np.linalg.norm(quat, axis=1, keepdims=True) + 1e-12)
@@ -753,7 +772,8 @@ def process_job(job: dict):
                      opacity_floor=cfg["opacity_floor"],
                      scale_clamp=cfg["scale_clamp"],
                      dark_cull_lum=cfg["dark_cull_lum"],
-                     dark_cull_opac=cfg["dark_cull_opac"])
+                     dark_cull_opac=cfg["dark_cull_opac"],
+                     lum_clamp_ceiling=cfg["lum_clamp_ceiling"])
     if hd:
         ply_to_splat(ply_path, hd_path, **export_kw)
         ply_to_splat(ply_path, splat_path, max_points=cfg["gs_max_points"], **export_kw)
