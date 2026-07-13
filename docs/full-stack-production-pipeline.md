@@ -37,12 +37,12 @@ at production v15 for rollback only.
 Upstream recommends at least four GPUs and documents testing on eight H20s.
 The initial 8×24GB A10G compatibility probe loaded every Qwen component but
 OOMed at native 1952×960 step zero (44.7MiB free). The corrected bounded
-topology is on-demand `g6e.12xlarge`: four 48GB L40S, a 1Ti gp3 root, and
+topology is on-demand `g6e.24xlarge`: four 48GB L40S, a 1Ti gp3 root, and
 four-way FSDP.
 
 - Expected runtime: 2.5–4.5 hours per world.
-- On-demand L40S rate: $10.4926/hour.
-- Maximum per candidate: $47.22 at the 4.5-hour hard timeout.
+- On-demand L40S rate: $15.0656/hour.
+- Maximum per candidate: $67.80 at the 4.5-hour hard timeout.
 - Candidate B remains held until A's health and actual cost are known.
 
 Karpenter normally provisions spot only; hero A uses the documented bounded
@@ -58,9 +58,10 @@ the capacity type immediately after the candidate.
 
 For the first Night Market A launch, the account's G/VT Spot quota was only
 64 vCPUs versus 192 required by `g5.48xlarge`. After the A10G memory ceiling
-was measured, `g6e.12xlarge` reduced the request to 48 vCPUs while meeting
-upstream's four-GPU minimum and the 48GB/rank requirement. Preflight overhead
-plus A's $47.22 cap remains below the $100 round cap.
+was measured, `g6e.12xlarge` was attempted but all tested AZs lacked capacity.
+The `g6e.24xlarge` fallback still meets upstream's four-GPU minimum and the
+48GB/rank requirement. Preflight overhead plus A's $67.80 cap remains below
+the $100 round cap.
 
 ## Durable stage schema and resume
 

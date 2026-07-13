@@ -32,7 +32,7 @@ spec:
             - matchExpressions:
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: [g6e.12xlarge]
+                values: [g6e.24xlarge]
       tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu
@@ -121,9 +121,9 @@ spec:
         - name: IMAGE_URI
           value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:7ec81634b68391f40a47c073264b50e854b33d3709b8d9656bc602889134dc93
         - name: INSTANCE_TYPE
-          value: g6e.12xlarge
+          value: g6e.24xlarge
         - name: INSTANCE_HOURLY_USD
-          value: "10.4926"
+          value: "15.0656"
         - name: MAX_JOB_SECONDS
           value: "16200"
         - name: NVIDIA_VISIBLE_DEVICES
@@ -136,8 +136,8 @@ spec:
             memory: 300Gi
             nvidia.com/gpu: "4"
           limits:
-            cpu: "48"
-            memory: 360Gi
+            cpu: "80"
+            memory: 700Gi
             nvidia.com/gpu: "4"
         volumeMounts:
         - mountPath: /models/hf-cache

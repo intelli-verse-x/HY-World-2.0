@@ -1,6 +1,6 @@
 # Dedicated full-stack HY-World node class. WorldStereo is upstream-tested
 # with >=4 GPUs and reports 8×H20. Preflight proved 24GB A10G OOM at native
-# HY-Pano resolution; 4×48GB L40S on g6e.12xlarge is the bounded fallback.
+# HY-Pano resolution; 4×48GB L40S on g6e.24xlarge is the capacity fallback.
 # The 1Ti
 # ephemeral root holds the expanded ~250Gi S3 model mirror plus intermediates;
 # durable checkpoints are uploaded to S3 after every stage.
@@ -51,8 +51,8 @@ spec:
     consolidateAfter: 5m
     consolidationPolicy: WhenEmptyOrUnderutilized
   limits:
-    cpu: "48"
-    memory: 384Gi
+    cpu: "96"
+    memory: 768Gi
     nvidia.com/gpu: "4"
   template:
     metadata:
@@ -78,7 +78,7 @@ spec:
         values: [us-east-1a, us-east-1b, us-east-1d]
       - key: node.kubernetes.io/instance-type
         operator: In
-        values: [g6e.12xlarge]
+        values: [g6e.24xlarge]
       taints:
       - effect: NoSchedule
         key: nvidia.com/gpu
