@@ -118,6 +118,18 @@ STAGE_MODELS = {
     "viewer_export": ["antimatter15 .splat binary exporter"],
 }
 
+MODEL_REVISIONS = {
+    "Qwen/Qwen-Image-Edit-2509": "d3968ef930e841f4c73640fb8afa3b306a78167e",
+    "tencent/HY-World-2.0": "d78a16c91c7a56488894a1c8de4f5c7cc28aa8b0",
+    "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers": "b184e23a8a16b20f108f727c902e769e873ffc73",
+    "hanshanxue/WorldStereo": "ac2ad97ecb043fe80c2f19cd1898006becb9d66e",
+    "DiffusionWave/sam3": "480147c4f3cf808f763e6d44f762e71616ea1cec",
+    "Ruicheng/moge-2-vitl-normal": "b135031bae30b5ac2ae141a0e68717795ce38340",
+    "naver-iv/zim-anything-vitl": "667e2d7c233f6f1cacd12ccc64bdf6cc7b5aa16d",
+    "IDEA-Research/grounding-dino-tiny": "a2bb814dd30d776dcf7e30523b00659f4f141c71",
+    "facebook/dinov2-base": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",
+}
+
 
 def n_gpus() -> int:
     if Config.NGPU:
@@ -247,6 +259,14 @@ def persist_checkpoint(
         "sourceCommit": Config.SOURCE_COMMIT,
         "image": Config.IMAGE_URI,
         "models": STAGE_MODELS.get(stage, []),
+        "modelRevisions": {
+            repo: revision
+            for repo, revision in MODEL_REVISIONS.items()
+            if any(
+                model == repo or model.startswith(f"{repo}/")
+                for model in STAGE_MODELS.get(stage, [])
+            )
+        },
         "prompt": prompt_meta,
         "compute": {
             "instanceType": Config.INSTANCE_TYPE,
