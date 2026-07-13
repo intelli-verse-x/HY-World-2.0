@@ -24,7 +24,7 @@ spec:
       serviceAccountName: ssm-access
       terminationGracePeriodSeconds: 120
       nodeSelector:
-        gpu-class: hy-world-full
+        gpu-class: worldgen-fullstack-p5
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -34,6 +34,10 @@ spec:
                 operator: In
                 values: [p5.4xlarge]
       tolerations:
+      - effect: NoSchedule
+        key: dedicated
+        operator: Equal
+        value: worldgen-fullstack-p5
       - effect: NoSchedule
         key: nvidia.com/gpu
         operator: Exists
@@ -70,7 +74,7 @@ spec:
           name: model-cache
       containers:
       - name: worker
-        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:f0c68b54356bbe4b06d0eb9ca3068829df4ebc00ad4bf890355b46d58294e201
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD
@@ -117,9 +121,9 @@ spec:
         - name: NGPU
           value: "1"
         - name: SOURCE_COMMIT
-          value: 248de8b
+          value: 5c80e67
         - name: IMAGE_URI
-          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
+          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:f0c68b54356bbe4b06d0eb9ca3068829df4ebc00ad4bf890355b46d58294e201
         - name: INSTANCE_TYPE
           value: p5.4xlarge
         - name: INSTANCE_HOURLY_USD

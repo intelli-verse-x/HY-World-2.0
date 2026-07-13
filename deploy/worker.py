@@ -9,6 +9,9 @@ Designed for a single 24GB GPU (L4/A10G) using 4-bit quantization for the
 20B Qwen-Image-Edit backbone; QUANT_MODE=bf16 for 48GB+ cards (L40S).
 """
 
+import utils.http_session
+import utils.transport
+import utils.session
 import gc
 import io
 import json

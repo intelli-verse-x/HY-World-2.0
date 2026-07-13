@@ -1,0 +1,9 @@
+FROM python:3.12-slim
+
+RUN pip install --no-cache-dir boto3 redis
+
+WORKDIR /app
+COPY deploy/worldgen/capacity_lifecycle.py /app/capacity_lifecycle.py
+
+USER 65532:65532
+ENTRYPOINT ["python", "/app/capacity_lifecycle.py"]

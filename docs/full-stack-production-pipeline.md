@@ -132,7 +132,8 @@ Before promotion, each candidate requires:
 - parallax/reprojection, floor/ceiling coverage, clipping/void, shimmer,
   landmark, and named-object checks;
 - full gameplay with unchanged story/audio and server-side redaction;
-- independent harsh-player, HD-verifier, and wow-gate scores ≥9.5.
+- independent harsh-player, HD-verifier, and wow-gate scorecards with every
+  visual parameter exactly 10.0 and every gameplay/experience parameter ≥9.5.
 
 Only after all three gates pass may an operator enable promotion, atomically
 copy the selected artifacts, refresh `spatial.json`, re-author Nakama anchors,
@@ -148,13 +149,14 @@ kubectl apply -f deploy/worldgen/k8s/stage-weights-job.yaml
 # Build immutable image
 git archive HEAD | gzip > /tmp/hy-world-full.tar.gz
 aws s3 cp /tmp/hy-world-full.tar.gz \
-  s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz
+  s3://intelliverse-hyworld-private-us-east-1/build/hy-world/context.tar.gz
 kubectl apply -f deploy/worldgen/k8s/build-job.yaml
 
-# Install isolated compute and scaler
+# Install isolated reserved compute, scaler, and five-minute lifecycle guard
 kubectl apply -f deploy/worldgen/k8s/nodepool.yaml
 kubectl apply -f deploy/worldgen/k8s/deployment.yaml
 kubectl apply -f deploy/worldgen/k8s/scaledobject.yaml
+kubectl apply -f deploy/worldgen/k8s/capacity-lifecycle.yaml
 
 # Queue two hero candidates after image/weights/preflight pass
 bash deploy/worldgen/enqueue-nightmarket-full.sh
@@ -168,3 +170,30 @@ Outputs outside the licensed Territory (EU, UK, and South Korea are excluded).
 the territorial restriction. Production promotion to a globally reachable
 viewer therefore requires verified geo-enforcement and the required
 machine-generated-content disclosure. Internal US staging can proceed.
+
+## Reserved H100 lifecycle
+
+`worldgen-fullstack-p5` is a one-node Karpenter pool that accepts only
+`p5.4xlarge` reserved capacity selected by the
+`ManagedBy=hy-world-fullstack,Workload=worldgen-fullstack` tags. Its dedicated
+label and taint prevent unrelated pods from consuming the H100. The worker has
+the only matching selectors/tolerations.
+
+KEDA scales the worker `0→1` and keeps it while either the signal or processing
+Redis list is non-empty. Its cooldown is 900 seconds. Karpenter consolidates
+empty nodes after 15 minutes.
+
+`worldgen-capacity-lifecycle` runs every five minutes. When work exists and no
+reservation exists it tries one reservation per configured zone, stopping at
+the first success. It never creates more than one instance. When both queues
+stay empty for 15 minutes, it scales the worker to zero, waits for worker pods
+to terminate, deletes only NodeClaims belonging to this pool, then cancels only
+tagged reservations. State and timestamps are durable in the private S3
+bucket; Discord records create, failure, idle, and cancellation transitions.
+Recreating canceled capacity is best effort and may fail.
+
+The controller image is immutable:
+`970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-capacity-lifecycle@sha256:8a13a20dad9af05622df639862bde4433b7ac47a137ed4a23d490c45241d3f13`.
+The current public on-demand reference price is `$6.88/hour`; worker jobs retain
+their one-hour `$6.88` hard cap. An unused ODCR is billed, which is why the
+controller cancels rather than merely scaling pods.
