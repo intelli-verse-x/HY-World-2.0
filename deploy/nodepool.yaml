@@ -1,6 +1,8 @@
 # Dedicated worldgen GPU pool — tainted so ONLY hy-world-worker lands here.
 # Cheapest-viable-first: 24GB cards (g6/g5 4xlarge, 64GB RAM) then
-# L40S 48GB (g6e.2xl/4xl) for bf16 headroom. Spot only.
+# L40S 48GB (g6e.2xl/4xl) for bf16 headroom. Prefer spot; Karpenter may
+# fall back to on-demand when spot capacity is unavailable during required
+# production regeneration runs.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
@@ -29,7 +31,7 @@ spec:
       requirements:
       - key: karpenter.sh/capacity-type
         operator: In
-        values: ["spot"]
+        values: ["spot", "on-demand"]
       - key: kubernetes.io/arch
         operator: In
         values: ["amd64"]
