@@ -1,9 +1,10 @@
 # Dedicated full-stack HY-World node class. WorldStereo is upstream-tested
 # with >=4 GPUs and reports 8×H20. Preflight proved 24GB A10G OOM at native
-# HY-Pano resolution; stage A runs on one 48GB L40S with 128Gi host memory for
-# sequential CPU offload, then checkpoints before the four-GPU
-# WorldStereo/3DGS topology resumes it. The smaller g6e.xlarge was rejected
-# after its 32Gi host memory starved kubelet during model offload.
+# HY-Pano resolution; stage A runs on one 80GB H100 rank, then checkpoints
+# before the WorldStereo/3DGS topology resumes it. Single-rank 48GB L40S
+# attempts were rejected after model execution consumed >42GiB and failed
+# in cuBLAS/LoRA kernels. p5.4xlarge is the no-waste 80GB-rank target once
+# AWS supplies on-demand or reserved capacity.
 # The 1Ti
 # ephemeral root holds the expanded ~250Gi S3 model mirror plus intermediates;
 # durable checkpoints are uploaded to S3 after every stage.
@@ -55,7 +56,7 @@ spec:
     consolidationPolicy: WhenEmptyOrUnderutilized
   limits:
     cpu: "16"
-    memory: 128Gi
+    memory: 256Gi
     nvidia.com/gpu: "1"
   template:
     metadata:
@@ -78,12 +79,12 @@ spec:
         values: [amd64]
       - key: topology.kubernetes.io/zone
         operator: In
-        # EC2NodeClass currently discovers subnets in 1a/1b/1c. Include every
-        # effective zone; listing 1d alone cannot help without a tagged subnet.
+        # Keep every discovered/offered zone eligible once AWS capacity or an
+        # open capacity reservation becomes available.
         values: [us-east-1a, us-east-1b, us-east-1c]
       - key: node.kubernetes.io/instance-type
         operator: In
-        values: [g6e.4xlarge]
+        values: [p5.4xlarge]
       taints:
       - effect: NoSchedule
         key: nvidia.com/gpu
