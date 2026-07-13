@@ -145,10 +145,10 @@ spec:
       volumes:
       - name: model-cache
         emptyDir:
-          sizeLimit: 220Gi
+          sizeLimit: 350Gi
       - name: scenes
         emptyDir:
-          sizeLimit: 320Gi
+          sizeLimit: 500Gi
       - name: shm
         emptyDir:
           medium: Memory

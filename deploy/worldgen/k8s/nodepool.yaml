@@ -1,7 +1,7 @@
 # Dedicated full-stack HY-World node class. WorldStereo is upstream-tested
 # with >=4 GPUs and recommends 8; an 8xA10G g5.48xlarge gives FSDP enough
-# shards while retaining the upstream 24GB-per-rank code path. The 600Gi
-# ephemeral root holds the ~190Gi model mirror plus stage intermediates;
+# shards while retaining the upstream 24GB-per-rank code path. The 1Ti
+# ephemeral root holds the expanded ~250Gi S3 model mirror plus intermediates;
 # durable checkpoints are uploaded to S3 after every stage.
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
@@ -16,7 +16,7 @@ spec:
       deleteOnTermination: true
       iops: 12000
       throughput: 500
-      volumeSize: 600Gi
+      volumeSize: 1000Gi
       volumeType: gp3
   metadataOptions:
     httpEndpoint: enabled
