@@ -274,11 +274,37 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
     elif stage == "panorama":
         files = [scene_dir / "panorama.png"]
     elif stage == "traj_generate":
+        import math
+        import numpy as np
         files = list(scene_dir.glob("render_results/**/camera.json"))
         if not files:
             raise RuntimeError("trajectory contract failed: no camera.json paths")
+        yaws = []
+        pitches = []
+        camera_frames = 0
+        trajectory_types = set()
+        for path in files:
+            data = json.loads(path.read_text())
+            trajectory_types.add(data.get("type", "unknown"))
+            for w2c in data.get("extrinsic", []):
+                c2w = np.linalg.inv(np.asarray(w2c, dtype=np.float64))
+                forward = c2w[:3, 2]
+                yaws.append(math.degrees(math.atan2(float(forward[0]), float(forward[2]))) % 360)
+                pitches.append(math.degrees(math.asin(float(np.clip(forward[1], -1, 1)))))
+                camera_frames += 1
+        yaw_bins = sorted({int(yaw // 45) % 8 for yaw in yaws})
+        vertical_span = max(pitches) - min(pitches) if pitches else 0
+        if len(files) < 9 or len(yaw_bins) < 6 or vertical_span < 30:
+            raise RuntimeError(
+                "trajectory coverage contract failed: "
+                f"trajectories={len(files)}, yawBins={yaw_bins}, verticalSpan={vertical_span:.1f}"
+            )
         return {
             "trajectoryFiles": len(files),
+            "cameraFrames": camera_frames,
+            "trajectoryTypes": sorted(trajectory_types),
+            "yaw45DegreeBins": yaw_bins,
+            "verticalPitchSpanDegrees": round(vertical_span, 3),
             "objectsJson": (scene_dir / "objects.json").exists(),
             "navmeshPresent": (scene_dir / "navmesh").exists(),
             "upRoutes": len(list(scene_dir.glob("render_results/**/up*"))),
@@ -286,14 +312,90 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
     elif stage == "traj_render":
         files = list(scene_dir.glob("render_results/**/render.mp4"))
     elif stage == "video_gen":
+        import cv2
+        import numpy as np
         files = list(scene_dir.glob("render_results/**/*worldstereo*-result.mp4"))
         if not files:
             files = list(scene_dir.glob("render_results/**/*worldstereo*_result.mp4"))
+        temporal = []
+        for path in files[:12]:
+            capture = cv2.VideoCapture(str(path))
+            prior = None
+            prior_delta = None
+            deltas = []
+            acceleration = []
+            sampled = 0
+            while sampled < 24:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frame = cv2.resize(frame, (256, 144)).astype(np.float32) / 255.0
+                if prior is not None:
+                    delta = frame - prior
+                    deltas.append(float(np.mean(np.abs(delta))))
+                    if prior_delta is not None:
+                        acceleration.append(float(np.mean(np.abs(delta - prior_delta))))
+                    prior_delta = delta
+                prior = frame
+                sampled += 1
+            capture.release()
+            if deltas:
+                temporal.append({
+                    "path": str(path.relative_to(scene_dir)),
+                    "sampledFrames": sampled,
+                    "meanFrameDelta": round(float(np.mean(deltas)), 6),
+                    "p95FrameDelta": round(float(np.percentile(deltas, 95)), 6),
+                    "meanTemporalAcceleration": round(
+                        float(np.mean(acceleration)) if acceleration else 0, 6
+                    ),
+                })
+        if not temporal:
+            raise RuntimeError("temporal consistency contract failed: no decodable generated videos")
+        wm_depths = list(scene_dir.glob(
+            "render_results/**/world_mirror_data/results/depth/*.npy"
+        ))
+        finite_ratios = []
+        positive_ratios = []
+        for path in wm_depths[:16]:
+            depth = np.load(path)
+            finite_ratios.append(float(np.isfinite(depth).mean()))
+            positive_ratios.append(float((depth[np.isfinite(depth)] > 0).mean()))
+        if wm_depths and min(finite_ratios) < 0.99:
+            raise RuntimeError(
+                f"WorldMirror geometry contract failed: finite depth min={min(finite_ratios):.4f}"
+            )
+        video_metrics = {
+            "temporalConsistency": temporal,
+            "worldMirrorDepthMaps": len(wm_depths),
+            "worldMirrorFiniteDepthMin": round(min(finite_ratios), 6) if finite_ratios else None,
+            "worldMirrorPositiveDepthMin": round(min(positive_ratios), 6) if positive_ratios else None,
+        }
     elif stage == "gen_gs_data":
         files = list((scene_dir / "gs_data").rglob("*")) if (scene_dir / "gs_data").exists() else []
         files = [p for p in files if p.is_file()]
     elif stage == "gs_train":
+        import numpy as np
+        from plyfile import PlyData
         files = list(result_dir.rglob("*.ply")) + list(result_dir.rglob("*.spz"))
+        ply_candidates = [path for path in files if path.suffix == ".ply"]
+        if ply_candidates:
+            vertices = PlyData.read(str(max(ply_candidates, key=lambda path: path.stat().st_mtime)))["vertex"].data
+            scales = np.exp(np.stack([
+                vertices["scale_0"], vertices["scale_1"], vertices["scale_2"],
+            ], axis=1))
+            opacities = 1.0 / (1.0 + np.exp(-vertices["opacity"].astype(np.float64)))
+            gs_metrics = {
+                "gaussianCount": len(vertices),
+                "finitePositionPct": round(float(np.isfinite(np.stack([
+                    vertices["x"], vertices["y"], vertices["z"],
+                ], axis=1)).mean() * 100), 6),
+                "opacityP01P50P99": [
+                    round(float(value), 6) for value in np.percentile(opacities, [1, 50, 99])
+                ],
+                "scaleP99": round(float(np.percentile(scales, 99)), 6),
+            }
+            if gs_metrics["finitePositionPct"] < 100 or gs_metrics["gaussianCount"] < 100_000:
+                raise RuntimeError(f"3DGS contract failed: {gs_metrics}")
     elif stage == "viewer_export":
         files = [result_dir / "world.splat"]
     else:
@@ -301,6 +403,10 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
     if not files or any(not path.exists() or path.stat().st_size == 0 for path in files):
         raise RuntimeError(f"{stage} contract failed: required non-empty outputs missing")
     metrics = {"fileCount": len(files), "totalBytes": sum(path.stat().st_size for path in files)}
+    if stage == "video_gen":
+        metrics.update(video_metrics)
+    if stage == "gs_train" and ply_candidates:
+        metrics.update(gs_metrics)
     if stage == "panorama":
         from PIL import Image
         with Image.open(files[0]) as image:
