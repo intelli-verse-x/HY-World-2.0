@@ -3,7 +3,7 @@
 # take hours, so the image is built on an amd64 CPU node instead.
 #
 # Prereqs (created by the deploy runbook, see README.md):
-#   - build context tar at s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz
+#   - build context tar in the private HY-World bucket
 #   - secret hy-world-ecr-push: dockerconfigjson with a fresh
 #     `aws ecr get-login-password` token (valid 12 h)
 #   - PVC hy-world-build-ws (150Gi gp3) as BuildKit workspace
@@ -50,7 +50,7 @@ spec:
         - |
           set -eu
           rm -rf /workspace/ctx && mkdir -p /workspace/ctx
-          aws s3 cp s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz /tmp/ctx.tgz
+          aws s3 cp s3://intelliverse-hyworld-private-us-east-1/build/hy-world/context.tar.gz /tmp/ctx.tgz
           yum install -y tar gzip >/dev/null
           tar -xzf /tmp/ctx.tgz -C /workspace/ctx
           chmod -R a+rwX /workspace
