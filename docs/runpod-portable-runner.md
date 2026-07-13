@@ -20,7 +20,33 @@ Evidence captured 2026-07-13, AWS account `970547373533`.
   run is well under the remaining `$416.46` cap; budget is not the binding
   constraint.
 
-## The one blocker (founder / admin action required)
+## Status 2026-07-13: UNBLOCKED and pipeline running
+
+The IAM trust edit below was applied: `hy-world-portable-runner` now trusts
+`user/s3-user` for `sts:AssumeRole` (see `iam/portable-runner-trust.json`). The
+scoped role reads the private weights cache and writes private checkpoints;
+`runpod_launch.py --dry-run` confirms the full credential path.
+
+First real run on a RunPod H100 80GB (US Secure Cloud):
+
+- Weight sync: ~196 GB S3 -> pod in ~22 min (throughput-bound; East-DC pinning +
+  40 concurrent streams help but the transfer is inherently large — use a
+  persistent network volume via `--network-volume-id` to pay this once).
+- **Stage 0a seed image (Gemini): OK.**
+- **Stage 0b panorama (HY-Pano 2.0): OK** — 250 s, real 3.27 MB equirectangular
+  Night Market panorama with all five landmarks legible.
+- **Stage 1 WorldNav (`traj_generate`): FIXED root cause.** It failed because
+  `traj_generate.py` resolves SAM/GroundingDINO/SAM3/MoGe via
+  `snapshot_download(cache_dir=~/.cache/huggingface/hub)`, ignoring `HF_HOME`, so
+  offline resolution couldn't find `facebook/sam-vit-base` etc. Fix (entrypoint,
+  no image rebuild): symlink `~/.cache/huggingface/hub -> $MODEL_ROOT/hub` and pin
+  `SAM3_REPO_ID=DiffusionWave/sam3` (the cached ungated mirror).
+
+Remaining to a full four-stage world: stage a persistent volume once, then run
+WorldNav -> WorldStereo (heavy; may need multi-GPU) -> multi-view 3DGS, then hand
+to the independent gates. No founder blocker remains; this is GPU-time + iteration.
+
+## The original blocker (now resolved by the trust edit)
 
 The RunPod pod must:
 

@@ -12,7 +12,28 @@
 # chain from the environment. The control-plane launcher is responsible for
 # injecting short-lived, least-privilege AWS credentials (see
 # docs/runpod-portable-runner.md). This script never prints secret values.
-set -euo pipefail
+set -uo pipefail
+
+# ---- FAILSAFE FIRST: arm an absolute self-terminate before anything that can
+# fail, so the pod can never bill indefinitely even if setup crashes early. ----
+FAILSAFE_DEADLINE_SECONDS="${HARD_DEADLINE_SECONDS:-14400}"
+runpod_terminate_self() {
+  local pid="${RUNPOD_POD_ID:-}"
+  echo "[watchdog] terminating pod ${pid:-<self>}"
+  for _ in 1 2 3; do
+    if [[ -n "${RUNPOD_API_KEY:-}" && -n "$pid" ]]; then
+      curl -fsS -X DELETE "https://rest.runpod.io/v1/pods/${pid}" \
+        -H "Authorization: Bearer ${RUNPOD_API_KEY}" >/dev/null 2>&1 && exit 0
+      # python fallback (curl may be absent in the base image)
+      python3 -c 'import os,urllib.request as u;u.urlopen(u.Request("https://rest.runpod.io/v1/pods/"+os.environ["RUNPOD_POD_ID"],method="DELETE",headers={"Authorization":"Bearer "+os.environ["RUNPOD_API_KEY"]}),timeout=20)' >/dev/null 2>&1 && exit 0
+    fi
+    runpodctl remove pod "$pid" >/dev/null 2>&1 && exit 0
+    sleep 5
+  done
+  poweroff -f >/dev/null 2>&1 || kill -9 1 || true
+}
+( sleep "$FAILSAFE_DEADLINE_SECONDS"; echo "[watchdog] failsafe deadline"; runpod_terminate_self ) &
+set -e
 
 # ---- Required runtime inputs (injected by the launcher as pod env) ----
 : "${AWS_REGION:?AWS_REGION required}"
@@ -35,24 +56,15 @@ LOG_FILE="${LOG_FILE:-/var/log/hyworld-runpod-runner.log}"
 mkdir -p "$MODEL_ROOT" "$WORK_ROOT/scenes" "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-runpod_terminate_self() {
-  # Best-effort self-termination via the RunPod REST API. RunPod injects the pod
-  # id as RUNPOD_POD_ID. Requires a (scoped) RUNPOD_API_KEY in env; if absent we
-  # fall back to `runpodctl` which reads the pod's own credential.
-  local pid="${RUNPOD_POD_ID:-}"
-  echo "[watchdog] terminating pod ${pid:-<self>}"
-  if [[ -n "${RUNPOD_API_KEY:-}" && -n "$pid" ]]; then
-    curl -fsS -X DELETE "https://rest.runpod.io/v1/pods/${pid}" \
-      -H "Authorization: Bearer ${RUNPOD_API_KEY}" >/dev/null 2>&1 || true
-  fi
-  runpodctl remove pod "$pid" >/dev/null 2>&1 || true
-  # Last resort: power off so the pod stops accruing GPU time.
-  poweroff -f >/dev/null 2>&1 || kill -9 1 || true
-}
-
-# Absolute deadline: bounds cost regardless of worker health. Independent of the
-# control plane; survives control-plane loss.
-( sleep "$HARD_DEADLINE_SECONDS"; echo "[watchdog] hard deadline reached"; runpod_terminate_self ) &
+# Ship the full container log to S3 every 20s (and it flushes on exit via the
+# next tick before self-terminate). This is the only way to read stage stderr,
+# since RunPod pod logs are not exposed over the REST API.
+JOB_LOG_NAME="$(printf '%s' "$JOB_JSON_B64" | base64 -d | python3 -c 'import sys,json;print(json.load(sys.stdin)["jobId"])' 2>/dev/null || echo runpod)"
+LOG_S3="s3://${MODEL_BUCKET}/worldgen-full-ops/portable/logs/${JOB_LOG_NAME}.log"
+( while true; do
+    aws s3 cp "$LOG_FILE" "$LOG_S3" --region "$AWS_REGION" --only-show-errors 2>/dev/null || true
+    sleep 20
+  done ) &
 
 command -v aws >/dev/null 2>&1 || pip install --no-cache-dir awscli >/dev/null 2>&1 || true
 command -v redis-server >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq redis-server socat >/dev/null 2>&1) || true
@@ -62,11 +74,28 @@ nvidia-smi || { echo "[fatal] no GPU visible"; runpod_terminate_self; exit 1; }
 GPU_COUNT="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')"
 echo "[preflight] GPUs=$GPU_COUNT"
 
-# Sync the license-controlled private weights cache. hf_transfer-style parallel
-# copy; blobs/locks are omitted in the dereferenced cache.
-echo "[preflight] syncing weights from s3://${MODEL_BUCKET}/${MODEL_PREFIX}"
-aws s3 sync "s3://${MODEL_BUCKET}/${MODEL_PREFIX}" "$MODEL_ROOT" \
-  --region "$AWS_REGION" --only-show-errors
+# Sync the license-controlled private weights cache. Raise concurrency so the
+# ~196 GB pull saturates the pod NIC instead of the default 10 streams. Skip if
+# a mounted volume already has the cache staged (idempotent reuse).
+aws configure set default.s3.max_concurrent_requests 40
+aws configure set default.s3.max_queue_size 20000
+STAMP="$MODEL_ROOT/.sync-complete"
+if [[ -f "$STAMP" ]]; then
+  echo "[preflight] weights already staged on mounted volume; skipping sync"
+else
+  echo "[preflight] syncing weights from s3://${MODEL_BUCKET}/${MODEL_PREFIX} (t0=$(date -u +%T))"
+  aws s3 sync "s3://${MODEL_BUCKET}/${MODEL_PREFIX}" "$MODEL_ROOT" \
+    --region "$AWS_REGION" --only-show-errors
+  echo "[preflight] weights synced (t1=$(date -u +%T))"
+  touch "$STAMP"
+fi
+
+# WorldNav's traj_generate.py resolves SAM/GroundingDINO/SAM3/MoGe via
+# snapshot_download(cache_dir=~/.cache/huggingface/hub), which ignores HF_HOME.
+# Point that hardcoded cache dir at the synced cache so offline resolution finds
+# refs/main + snapshots for every resolve_hf_checkpoint() model.
+mkdir -p "$HOME/.cache/huggingface"
+ln -sfn "$MODEL_ROOT/hub" "$HOME/.cache/huggingface/hub"
 
 # Local Redis for the worker queue semantics.
 redis-server --daemonize yes --save '' --appendonly no
@@ -93,6 +122,9 @@ export S3_CHECKPOINT_BASE=worldgen-full-checkpoints
 export S3_OUTPUT_BASE=worldgen-full-staging
 export LLM_ADDR=127.0.0.1 LLM_PORT="$LLM_BRIDGE_PORT"
 export SAM_BOX_REPO_ID=facebook/sam-vit-base
+# The cache holds DiffusionWave/sam3 (ungated mirror); the code default
+# facebook/sam3 is gated and absent, so pin the mirror to match the cache.
+export SAM3_REPO_ID=DiffusionWave/sam3
 export HF_HOME="$MODEL_ROOT" HF_HUB_OFFLINE=1
 export NGPU="$GPU_COUNT"
 export ALLOW_PRODUCTION_PROMOTION=0
