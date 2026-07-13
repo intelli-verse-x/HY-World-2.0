@@ -56,10 +56,10 @@ print(json.dumps({
 }))
 PY
 )
-  echo "LPUSH $jobId"
+  echo "RPUSH $jobId"
   kubectl -n "$NAMESPACE" run "enqueue-${jobId}-$(date +%s)" --rm -i --restart=Never \
     --image=public.ecr.aws/docker/library/redis:7 -- \
-    redis-cli -h "$REDIS_HOST" -a "$REDIS_PW" LPUSH pipeline:signal:worldgen "$payload"
+    redis-cli -h "$REDIS_HOST" -a "$REDIS_PW" RPUSH pipeline:signal:worldgen "$payload"
 done
 
 echo "Queued ${#WORLDS[@]} v14 regen job(s). Watch: kubectl -n $NAMESPACE logs -f deploy/hy-world-worker"
