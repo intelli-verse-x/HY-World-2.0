@@ -70,7 +70,7 @@ spec:
           name: model-cache
       containers:
       - name: worker
-        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:3028ec285191dd79e65bde24c078c9ae7f15a5b53c9dda2a8ee2a05677a0c2d2
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD
@@ -117,9 +117,9 @@ spec:
         - name: NGPU
           value: "1"
         - name: SOURCE_COMMIT
-          value: 4be07e3
+          value: 248de8b
         - name: IMAGE_URI
-          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:3028ec285191dd79e65bde24c078c9ae7f15a5b53c9dda2a8ee2a05677a0c2d2
+          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
         - name: INSTANCE_TYPE
           value: g6e.4xlarge
         - name: INSTANCE_HOURLY_USD
