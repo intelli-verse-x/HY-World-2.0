@@ -34,6 +34,13 @@ spec:
     spec:
       serviceAccountName: ssm-access
       restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+      - key: arch-amd64
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
       initContainers:
       - name: fetch-context
         image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
