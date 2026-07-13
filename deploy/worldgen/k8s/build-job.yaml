@@ -74,7 +74,7 @@ spec:
           seccompProfile:
             type: Unconfined
         resources:
-          requests: {cpu: "2", memory: 9Gi}
+          requests: {cpu: "1", memory: 4Gi}
           limits: {cpu: "3500m", memory: 13Gi}
         volumeMounts:
         - {mountPath: /workspace, name: ws}
