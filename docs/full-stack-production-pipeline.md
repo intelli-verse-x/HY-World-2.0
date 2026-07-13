@@ -19,7 +19,7 @@ The production sequence is therefore:
 
 1. HY-Pano 2.0: Gemini seed image → Qwen-Image-Edit-2509 + HY-Pano LoRA,
    native 1952×960 panorama.
-2. WorldNav: VLM/SAM3/ZIM/MoGe scene analysis, collision-aware trajectory
+2. WorldNav: VLM/SAM3/Apache-2.0 SAM/MoGe scene analysis, collision-aware trajectory
    planning, upward and reconstruction routes, then multi-GPU point-cloud
    trajectory rendering.
 3. WorldStereo 2.0: FSDP DMD keyframe-video generation with a panorama memory

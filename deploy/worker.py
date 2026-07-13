@@ -9,6 +9,7 @@ Designed for a single 24GB GPU (L4/A10G) using 4-bit quantization for the
 20B Qwen-Image-Edit backbone; QUANT_MODE=bf16 for 48GB+ cards (L40S).
 """
 
+import base64
 import gc
 import io
 import json
@@ -38,7 +39,11 @@ BLPOP_TIMEOUT = int(os.environ.get("BLPOP_TIMEOUT", "120"))
 
 PANO_MODEL = os.environ.get("PANO_MODEL", "Qwen/Qwen-Image-Edit-2509")
 PANO_LORA = os.environ.get("PANO_LORA", "tencent/HY-World-2.0")
-SEED_MODEL = os.environ.get("SEED_MODEL", "stabilityai/sdxl-turbo")
+SEED_MODEL = os.environ.get("SEED_MODEL", "gemini/gemini-3.1-flash-image")
+IMAGE_API_URL = os.environ.get(
+    "IMAGE_API_URL", "http://litellm.aicart.svc.cluster.local:4000/v1/images/generations"
+)
+IMAGE_API_KEY = os.environ.get("IMAGE_API_KEY") or os.environ.get("VLM_API_KEY", "")
 MIRROR_MODEL = os.environ.get("MIRROR_MODEL", "tencent/HY-World-2.0")
 
 PANO_H = int(os.environ.get("PANO_H", "960"))
@@ -78,24 +83,26 @@ def free_gpu():
 
 
 def gen_seed_image(prompt: str, out_path: Path):
-    """Stage A: text -> seed perspective image with SDXL-Turbo."""
-    import torch
-    from diffusers import AutoPipelineForText2Image
+    """Stage A: text -> seed image through the approved commercial API."""
+    import requests
 
     t0 = time.time()
-    pipe = AutoPipelineForText2Image.from_pretrained(
-        SEED_MODEL, torch_dtype=torch.float16, variant="fp16"
-    ).to("cuda")
-    img = pipe(
-        prompt=prompt,
-        num_inference_steps=6,
-        guidance_scale=0.0,
-        height=576,
-        width=1024,
-    ).images[0]
-    img.save(out_path)
-    del pipe
-    free_gpu()
+    if not IMAGE_API_KEY:
+        raise RuntimeError("IMAGE_API_KEY or VLM_API_KEY is required for seed generation")
+    response = requests.post(
+        IMAGE_API_URL,
+        headers={"Authorization": f"Bearer {IMAGE_API_KEY}"},
+        json={"model": SEED_MODEL, "prompt": prompt, "n": 1, "size": "1024x1024"},
+        timeout=300,
+    )
+    response.raise_for_status()
+    data = response.json()["data"][0]
+    if data.get("b64_json"):
+        out_path.write_bytes(base64.b64decode(data["b64_json"]))
+    else:
+        image = requests.get(data["url"], timeout=120)
+        image.raise_for_status()
+        out_path.write_bytes(image.content)
     log(f"seed image done in {time.time()-t0:.0f}s -> {out_path}")
     return out_path
 

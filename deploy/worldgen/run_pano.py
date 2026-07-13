@@ -29,9 +29,10 @@ from qwen_image import PanoDiffusionPipeline  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image", required=True)
+    ap.add_argument("--image")
     ap.add_argument("--prompt", default="")
-    ap.add_argument("--save", required=True)
+    ap.add_argument("--save")
+    ap.add_argument("--preflight-only", action="store_true")
     ap.add_argument("--width", type=int, default=1952)
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--steps", type=int, default=40)
@@ -58,6 +59,11 @@ def main() -> None:
     pipe.unload_lora_weights()
     print("[pano] LoRA fused; enabling model CPU offload")
     pipe.enable_model_cpu_offload()
+    if args.preflight_only:
+        print("[pano] model-load preflight OK")
+        return
+    if not args.image or not args.save:
+        ap.error("--image and --save are required unless --preflight-only is used")
 
     from PIL import Image
 

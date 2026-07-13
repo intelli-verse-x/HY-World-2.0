@@ -4,8 +4,12 @@ import cv2
 import numpy as np
 import torch
 from skimage import morphology
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-from zim_anything import zim_model_registry, ZimPredictor
+from transformers import (
+    AutoModelForZeroShotObjectDetection,
+    AutoProcessor,
+    SamModel,
+    SamProcessor,
+)
 
 
 def build_gd_model(GROUNDING_MODEL, device="cuda"):
@@ -17,16 +21,25 @@ def build_gd_model(GROUNDING_MODEL, device="cuda"):
     return processor, grounding_model
 
 
-# build zim model
-def build_zim_model(ZIM_MODEL_CONFIG, ZIM_CHECKPOINT, device="cuda"):
-    # build zim-anything from huggingface
-    zim_model = zim_model_registry[ZIM_MODEL_CONFIG](checkpoint=ZIM_CHECKPOINT).to(device)
-    zim_predictor = DetPredictor(zim_model)
-
-    return zim_predictor
+def build_box_segmenter(checkpoint, device="cuda"):
+    """Build the Apache-2.0 SAM box-prompt segmenter."""
+    processor = SamProcessor.from_pretrained(checkpoint)
+    model = SamModel.from_pretrained(checkpoint).to(device).eval()
+    return BoxSegmenter(model, processor, device)
 
 
-class DetPredictor(ZimPredictor):
+class BoxSegmenter:
+    """Small predictor adapter matching the box-mask contract used by WorldNav."""
+
+    def __init__(self, model, processor, device):
+        self.model = model
+        self.processor = processor
+        self.device = device
+        self.image = None
+
+    def set_image(self, image):
+        self.image = image
+
     def predict(
             self,
             point_coords: [np.ndarray] = None,
@@ -67,41 +80,46 @@ class DetPredictor(ZimPredictor):
             of masks and H=W=256. These low resolution logits can be passed to
             a subsequent iteration as mask input.
         """
-        if not self.is_image_set:
+        if self.image is None:
             raise RuntimeError("An image must be set with .set_image(...) before mask prediction.")
 
-        # Transform input prompts
-        coords_torch = None
-        labels_torch = None
-        box_torch = None
-
         if point_coords is not None:
-            assert (
-                    point_labels is not None
-            ), "point_labels must be supplied if point_coords is supplied."
-            point_coords = self.transform.apply_coords(point_coords, self.original_size)
-            coords_torch = torch.as_tensor(point_coords, dtype=torch.float, device=self.device)
-            labels_torch = torch.as_tensor(point_labels, dtype=torch.float, device=self.device)
-            coords_torch, labels_torch = coords_torch[None, :, :], labels_torch[None, :]
-        if box is not None:
-            box = self.transform.apply_boxes(box, self.original_size)
-            box_torch = torch.as_tensor(box, dtype=torch.float, device=self.device)
+            raise NotImplementedError("WorldNav's licensed segmenter adapter accepts box prompts only")
+        if box is None:
+            raise ValueError("At least one box prompt is required")
 
-        masks, iou_predictions, low_res_masks = self.predict_torch(
-            coords_torch,
-            labels_torch,
-            box_torch,
-            multimask_output,
-            return_logits=return_logits,
+        boxes = np.asarray(box, dtype=np.float32).reshape(-1, 4)
+        inputs = self.processor(
+            images=self.image,
+            input_boxes=[boxes.tolist()],
+            return_tensors="pt",
         )
+        inputs = inputs.to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs, multimask_output=multimask_output)
+
+        masks = self.processor.image_processor.post_process_masks(
+            outputs.pred_masks.cpu(),
+            inputs["original_sizes"].cpu(),
+            inputs["reshaped_input_sizes"].cpu(),
+        )[0]
+        if masks.ndim == 4:
+            masks = masks[:, 0]
+        masks_np = masks.float().numpy()
         if not return_logits:
-            masks = masks > 0.5
+            masks_np = masks_np > 0.0
 
-        masks_np = masks.squeeze(0).float().detach().cpu().numpy()
-        iou_predictions_np = iou_predictions[0].squeeze(0).float().detach().cpu().numpy()
-        low_res_masks_np = low_res_masks[0].squeeze(0).float().detach().cpu().numpy()
-
-        return masks_np, iou_predictions_np, low_res_masks_np
+        scores = outputs.iou_scores[0]
+        if scores.ndim == 2:
+            scores = scores[:, 0]
+        low_res_masks = outputs.pred_masks[0]
+        if low_res_masks.ndim == 4:
+            low_res_masks = low_res_masks[:, 0]
+        return (
+            masks_np,
+            scores.float().detach().cpu().numpy(),
+            low_res_masks.float().detach().cpu().numpy(),
+        )
 
 
 # filter the small bboxes to avoid memory overflow
@@ -138,10 +156,10 @@ def remove_sky_floaters(mask, min_size=1000):
     return mask
 
 
-def get_sky(image, zim_predictor, processor, grounding_model, DEVICE="cuda"):
+def get_sky(image, mask_predictor, processor, grounding_model, DEVICE="cuda"):
     text = "sky."
     H, W = image.height, image.width
-    zim_predictor.set_image(np.array(image.convert("RGB")))
+    mask_predictor.set_image(np.array(image.convert("RGB")))
 
     inputs = processor(images=image, text=text, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
@@ -154,7 +172,7 @@ def get_sky(image, zim_predictor, processor, grounding_model, DEVICE="cuda"):
         text_threshold=0.3,
         target_sizes=[image.size[::-1]]
     )
-    # get the box prompt for ZIM
+    # Send Grounding DINO's boxes to the promptable mask model.
     results[0]["boxes"] = results[0]["boxes"]
     # filter the small boxes to avoid memory overflow
     filter_keep = filter_small_bboxes(results)
@@ -167,7 +185,7 @@ def get_sky(image, zim_predictor, processor, grounding_model, DEVICE="cuda"):
         sky_mask = np.zeros((H, W), dtype=np.bool_)
         return sky_mask
 
-    masks, scores, logits = zim_predictor.predict(
+    masks, scores, logits = mask_predictor.predict(
         point_coords=None,
         point_labels=None,
         box=input_boxes,
@@ -199,9 +217,9 @@ def get_sky(image, zim_predictor, processor, grounding_model, DEVICE="cuda"):
     return sky_mask
 
 
-def get_zim_mask(image, text, box_conf, text_conf, zim_predictor, processor, grounding_model, DEVICE="cuda"):
+def get_segment_mask(image, text, box_conf, text_conf, mask_predictor, processor, grounding_model, DEVICE="cuda"):
     H, W = image.height, image.width
-    zim_predictor.set_image(np.array(image.convert("RGB")))
+    mask_predictor.set_image(np.array(image.convert("RGB")))
 
     inputs = processor(images=image, text=text, return_tensors="pt").to(DEVICE)
     with torch.no_grad():
@@ -225,7 +243,7 @@ def get_zim_mask(image, text, box_conf, text_conf, zim_predictor, processor, gro
         result_mask = np.zeros((H, W), dtype=np.bool_)
         return result_mask
 
-    masks, scores, logits = zim_predictor.predict(
+    masks, scores, logits = mask_predictor.predict(
         point_coords=None,
         point_labels=None,
         box=input_boxes,

@@ -14,7 +14,7 @@ LPUSH pipeline:signal:worldgen {job JSON}          (content-factory-redis)
 hy-world-worker  (4x 24GB GPU spot node: g6.12xlarge / g5.12xlarge)
   0a. seed image        litellm images API (gemini) — no GPU
   0b. panorama          Qwen-Image-Edit-2509 + HY-Pano-2.0 LoRA (CPU offload)
-  1. traj_generate      VLM (gemini via litellm) + SAM3 + ZIM + MoGe (1 GPU)
+  1. traj_generate      VLM + SAM3 + Apache-2.0 SAM + MoGe (1 GPU)
   2. traj_render        torchrun x4 point-cloud rendering
   3. video_gen          WorldStereo-2 DMD, FSDP over 4 GPUs
   4. gen_gs_data        3DGS training data

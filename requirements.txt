@@ -6,7 +6,6 @@ transformers==5.2.0
 accelerate
 peft==0.18.1
 safetensors
-zim_anything
 tensorboard
 
 # Model utilities
