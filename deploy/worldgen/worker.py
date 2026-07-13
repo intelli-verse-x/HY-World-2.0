@@ -54,6 +54,8 @@ logging.basicConfig(
     format="%(asctime)s - [WORLDGEN] - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+# httpx INFO logs include the complete Discord webhook URL (including token).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class Config:
@@ -1224,7 +1226,12 @@ def main() -> None:
         process_job(r, raw)
 
     while True:
-        raw = r.brpoplpush(Config.QUEUE, Config.PROCESSING_QUEUE, timeout=30)
+        try:
+            raw = r.brpoplpush(Config.QUEUE, Config.PROCESSING_QUEUE, timeout=30)
+        except (redis.TimeoutError, redis.ConnectionError) as error:
+            logger.warning("Redis blocking read retry: %s", type(error).__name__)
+            time.sleep(1)
+            continue
         if raw is None:
             continue
         process_job(r, raw)

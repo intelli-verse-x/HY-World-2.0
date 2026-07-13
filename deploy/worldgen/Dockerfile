@@ -40,8 +40,10 @@ RUN pip install --no-cache-dir --extra-index-url https://miropsota.github.io/tor
 RUN grep -v 'pytorch3d' requirements_git.txt > /tmp/req_git.txt \
     && pip install --no-cache-dir --no-build-isolation -r /tmp/req_git.txt
 
-# Worker-only deps
-RUN pip install --no-cache-dir redis boto3 httpx "huggingface_hub[hf_transfer]"
+# Worker-only deps. ORT 1.22 is the CUDA-12 build; newer wheels currently link
+# libcudart.so.13 and cannot load in the upstream CUDA-12.8 base image.
+RUN pip install --no-cache-dir redis boto3 httpx "huggingface_hub[hf_transfer]" \
+    && pip install --no-cache-dir --no-deps --force-reinstall "onnxruntime-gpu==1.22.0"
 
 # ---- Repo code ----
 COPY . /app
