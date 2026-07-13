@@ -436,19 +436,42 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
 
 def validate_landmark_visibility(scene_dir: Path, landmarks: list[dict]) -> dict:
     """Use the configured VLM to fail worlds whose five authored landmarks vanished."""
+    import cv2
     from PIL import Image, ImageDraw
     import httpx
 
-    frames = sorted(scene_dir.glob("render_results/**/start_frame.png"))[:16]
-    if len(frames) < 5:
-        raise RuntimeError(f"landmark visibility contract failed: only {len(frames)} source views")
+    videos = sorted(scene_dir.glob(
+        "render_results/*/traj*/worldstereo-*_result.mp4"
+    ))[:16]
+    if len(videos) < 5:
+        raise RuntimeError(
+            f"landmark visibility contract failed: only {len(videos)} generated trajectories"
+        )
     thumbs = []
     labels = []
-    for index, frame in enumerate(frames):
-        image = Image.open(frame).convert("RGB")
+    evidence_dir = scene_dir / "landmark-evidence"
+    evidence_dir.mkdir(exist_ok=True)
+    for index, video in enumerate(videos):
+        capture = cv2.VideoCapture(str(video))
+        frame_count = max(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 1)
+        frame_number = frame_count // 2
+        capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ok, frame = capture.read()
+        capture.release()
+        if not ok:
+            continue
+        evidence_index = len(thumbs)
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        image.save(evidence_dir / f"frame-{evidence_index:02d}.jpg", quality=95)
         image.thumbnail((512, 320))
         thumbs.append(image.copy())
-        labels.append(f"frame-{index:02d}:{frame.relative_to(scene_dir)}")
+        labels.append(
+            f"frame-{evidence_index:02d}:{video.relative_to(scene_dir)}#frame={frame_number}"
+        )
+    if len(thumbs) < 5:
+        raise RuntimeError(
+            f"landmark visibility contract failed: only {len(thumbs)} readable generated videos"
+        )
     cols = 4
     rows = (len(thumbs) + cols - 1) // cols
     sheet = Image.new("RGB", (cols * 512, rows * 350), "black")
@@ -540,23 +563,28 @@ def finalize_landmark_mapping(scene_dir: Path, result_dir: Path) -> dict:
     vertices = PlyData.read(str(ply_path))["vertex"].data
     xyz = np.stack([vertices["x"], vertices["y"], vertices["z"]], axis=1).astype(np.float64)
     finite_xyz = np.isfinite(xyz).all(axis=1)
-    frame_index = {
-        label.split(":", 1)[0]: scene_dir / label.split(":", 1)[1]
-        for label in mapping["frameIndex"]
-    }
+    frame_index = {}
+    for label in mapping["frameIndex"]:
+        frame_id, evidence = label.split(":", 1)
+        relative_video, frame_number = evidence.rsplit("#frame=", 1)
+        frame_index[frame_id] = {
+            "video": scene_dir / relative_video,
+            "frame": int(frame_number),
+        }
 
     for landmark in mapping["landmarks"]:
         frame_id = landmark["trajectoryVisibility"][0]
-        frame_path = frame_index.get(frame_id)
-        if frame_path is None:
+        evidence = frame_index.get(frame_id)
+        if evidence is None:
             raise RuntimeError(f"landmark mapping contract failed: unknown frame {frame_id}")
-        camera_files = sorted(frame_path.parent.glob("traj*/camera.json"))
-        if not camera_files:
+        video_path = evidence["video"]
+        camera_path = video_path.parent / "camera.json"
+        if not camera_path.exists():
             raise RuntimeError(f"landmark mapping contract failed: no camera for {frame_id}")
-        camera_path = camera_files[0]
         camera = json.loads(camera_path.read_text())
-        intrinsic = np.asarray(camera["intrinsic"][0], dtype=np.float64)
-        extrinsic = np.asarray(camera["extrinsic"][0], dtype=np.float64)
+        camera_index = min(evidence["frame"], len(camera["extrinsic"]) - 1)
+        intrinsic = np.asarray(camera["intrinsic"][camera_index], dtype=np.float64)
+        extrinsic = np.asarray(camera["extrinsic"][camera_index], dtype=np.float64)
         homogeneous = np.concatenate([xyz, np.ones((len(xyz), 1))], axis=1)
         camera_xyz = (extrinsic @ homogeneous.T).T[:, :3]
         depth = camera_xyz[:, 2]
@@ -587,7 +615,8 @@ def finalize_landmark_mapping(scene_dir: Path, result_dir: Path) -> dict:
         region_xyz = xyz[indices]
         landmark["reconstructedRegion"] = {
             "geometryArtifact": str(ply_path.relative_to(result_dir)),
-            "sourceFrame": str(frame_path.relative_to(scene_dir)),
+            "sourceVideo": str(video_path.relative_to(scene_dir)),
+            "sourceFrameIndex": evidence["frame"],
             "camera": str(camera_path.relative_to(scene_dir)),
             "gaussianCount": int(len(indices)),
             "anchorWorld": np.median(region_xyz, axis=0).round(6).tolist(),
