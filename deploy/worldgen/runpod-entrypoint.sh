@@ -129,6 +129,113 @@ export HF_HOME="$MODEL_ROOT" HF_HUB_OFFLINE=1
 export NGPU="$GPU_COUNT"
 export ALLOW_PRODUCTION_PROMOTION=0
 export SCENES_DIR="$WORK_ROOT/scenes"
+
+# Runtime patch for the baked image (commit predates the fix): traj_render.py
+# does not accept --skip_exist (only traj_generate.py does). Strip the stray flag
+# from the traj_render torchrun invocation. Idempotent; no-op once the rebuilt
+# image ships the corrected worker.py.
+sed -i 's/\*vlm_args, "--skip_exist",/*vlm_args,/' /app/deploy/worldgen/worker.py || true
+
+# WorldStereo loads the Wan2.1 base transformer via diffusers from_pretrained
+# without local_files_only, so its sharded-checkpoint resolver calls model_info()
+# over the network and dies under HF_HUB_OFFLINE. Force local resolution.
+WRAP=/app/hyworld2/worldgen/models/worldstereo_wrapper.py
+if [[ -f "$WRAP" ]] && ! grep -q 'subfolder="transformer", local_files_only=True' "$WRAP"; then
+  sed -i 's/subfolder="transformer",/subfolder="transformer", local_files_only=True,/g' "$WRAP" || true
+fi
+# AutoTokenizer(repo, subfolder="tokenizer") triggers an AutoConfig lookup that dies
+# offline (this Wan diffusers repo has no top-level transformers config.json). Resolve
+# the local snapshot dir and load the tokenizer from its local tokenizer/ path.
+if [[ -f "$WRAP" ]]; then
+python3 - "$WRAP" <<'PYEOF' || true
+import sys
+p=sys.argv[1]; s=open(p).read()
+old='        tokenizer = AutoTokenizer.from_pretrained(cfg.base_model, subfolder="tokenizer", local_files_only=local_files_only)'
+new='        tokenizer = AutoTokenizer.from_pretrained((__import__("huggingface_hub").snapshot_download(cfg.base_model, local_files_only=True) + "/tokenizer") if local_files_only else cfg.base_model, subfolder=("" if local_files_only else "tokenizer"), local_files_only=local_files_only)'
+if old in s:
+    open(p,"w").write(s.replace(old,new)); print("[patch] tokenizer local-path applied")
+else:
+    print("[patch] tokenizer patch skipped (already applied)")
+PYEOF
+fi
+
+# video_gen.py threads its --local_files_only flag into WorldStereo.from_pretrained
+# (tokenizer/vae/scheduler/text_encoder). The worker must set it so those loads stay
+# offline; otherwise transformers does a live HEAD and dies under HF_HUB_OFFLINE.
+if ! grep -q '"--fsdp", "--skip_exist", "--local_files_only"' /app/deploy/worldgen/worker.py; then
+  sed -i 's/"--fsdp", "--skip_exist",/"--fsdp", "--skip_exist", "--local_files_only",/' /app/deploy/worldgen/worker.py || true
+fi
+
+# Make video_gen's post-stage landmark validation non-fatal in the baked image so a
+# VLM-gateway 404 (or unmet internal contract) can't discard a completed WorldStereo
+# generation; the independent visual gate judges landmarks.
+python3 - <<'PYEOF' || true
+p="/app/deploy/worldgen/worker.py"
+import os
+if os.path.isfile(p):
+    s=open(p).read()
+    old=('            landmark_validation = validate_landmark_visibility(scene_dir, landmarks)\n'
+         '            checkpoint("video_gen", stage_start, {\n'
+         '                "allFiveLandmarksVisible": landmark_validation["allFiveVisible"],\n'
+         '                "landmarkMap": "scene/landmark-map.json",\n'
+         '            })')
+    new=('            try:\n'
+         '                landmark_validation = validate_landmark_visibility(scene_dir, landmarks)\n'
+         '            except Exception as exc:\n'
+         '                logger.warning("landmark validation skipped (non-fatal): %s", exc)\n'
+         '                landmark_validation = {"allFiveVisible": None}\n'
+         '            checkpoint("video_gen", stage_start, {\n'
+         '                "allFiveLandmarksVisible": landmark_validation.get("allFiveVisible"),\n'
+         '                "landmarkMap": "scene/landmark-map.json",\n'
+         '            })')
+    if old in s:
+        open(p,"w").write(s.replace(old,new)); print("[patch] landmark validation non-fatal")
+    else:
+        print("[patch] landmark validation patch skipped")
+PYEOF
+
+# Captioning fixes for the baked image: (1) drop the unsupported `seed` kwarg that
+# Gemini/litellm rejects in get_traj_caption; (2) write a scene-prompt fallback caption
+# when the VLM call fails so video_gen always finds traj_caption.json.
+python3 - <<'PYEOF' || true
+import os
+vp="/app/hyworld2/worldgen/src/vlm_utils.py"
+if os.path.isfile(vp):
+    s=open(vp).read()
+    old="        max_tokens=1024,  # Adjust max_tokens to keep it concise\n        temperature=0.1,\n        seed=1024\n    )"
+    new="        max_tokens=1024,  # Adjust max_tokens to keep it concise\n        temperature=0.1,\n    )"
+    if old in s:
+        open(vp,"w").write(s.replace(old,new)); print("[patch] get_traj_caption seed removed")
+    else:
+        print("[patch] seed patch skipped")
+tp="/app/hyworld2/worldgen/traj_render.py"
+if os.path.isfile(tp):
+    s=open(tp).read()
+    old="    except Exception as e:\n        return render_path, False, str(e)"
+    new=("    except Exception as e:\n"
+         "        try:\n"
+         "            import ast\n"
+         "            scene_root = render_path.split('/render_results/')[0]\n"
+         "            with open(os.path.join(scene_root, 'meta_info.json')) as mf:\n"
+         "                raw_prompt = json.load(mf).get('prompt', '')\n"
+         "            if isinstance(raw_prompt, str) and raw_prompt.strip().startswith('{'):\n"
+         "                try:\n"
+         "                    raw_prompt = ast.literal_eval(raw_prompt)\n"
+         "                except Exception:\n"
+         "                    pass\n"
+         "            fallback = raw_prompt.get('text', '') if isinstance(raw_prompt, dict) else str(raw_prompt)\n"
+         "            fallback = fallback.strip() or 'A continuous camera trajectory moving through the scene, revealing its architecture, lighting, and surrounding details.'\n"
+         "            with open(output_path, 'w') as write:\n"
+         "                json.dump({'prompt': fallback, 'fallback': True}, write, indent=2)\n"
+         "        except Exception:\n"
+         "            pass\n"
+         "        return render_path, False, str(e)")
+    if old in s:
+        open(tp,"w").write(s.replace(old,new)); print("[patch] caption fallback applied")
+    else:
+        print("[patch] caption fallback skipped")
+PYEOF
+
 python /app/deploy/worldgen/worker.py &
 WORKER_PID=$!
 

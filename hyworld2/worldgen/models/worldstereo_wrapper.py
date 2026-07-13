@@ -190,7 +190,7 @@ class WorldStereo:
         image_processor = CLIPImageProcessor.from_pretrained(
             cfg.base_model, do_rescale=False, subfolder="image_processor", local_files_only=local_files_only
         )
-        tokenizer = AutoTokenizer.from_pretrained(cfg.base_model, subfolder="tokenizer", local_files_only=local_files_only)
+        tokenizer = AutoTokenizer.from_pretrained((__import__("huggingface_hub").snapshot_download(cfg.base_model, local_files_only=True) + "/tokenizer") if local_files_only else cfg.base_model, subfolder=("" if local_files_only else "tokenizer"), local_files_only=local_files_only)
 
         pipeline = cls._build_pipeline(
             model_type,
@@ -260,6 +260,7 @@ class WorldStereo:
                 subfolder="transformer",
                 controlnet_cfg=cfg.controlnet_cfg,
                 torch_dtype=half_dtype,
+                local_files_only=True,
             )
         else:
             transformer = WorldStereoRefSModel.from_pretrained(
@@ -267,6 +268,7 @@ class WorldStereo:
                 subfolder="transformer",
                 controlnet_cfg=cfg.controlnet_cfg,
                 torch_dtype=half_dtype,
+                local_files_only=True,
             )
 
         rank0_log("Building ControlNet…")

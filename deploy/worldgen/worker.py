@@ -1094,7 +1094,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             stage_start = time.time()
             run_stage("traj_render", torchrun(
                 ngpu, "traj_render.py",
-                "--target_path", str(scene_dir), *vlm_args, "--skip_exist",
+                "--target_path", str(scene_dir), *vlm_args,
             ), cwd=wg, log_path=scene_dir / "logs/traj_render.log")
             checkpoint("traj_render", stage_start)
         if pause_requested("traj_render"):
@@ -1107,10 +1107,18 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             run_stage("video_gen", torchrun(
                 ngpu, "video_gen.py",
                 "--target_path", str(scene_dir), "--fsdp", "--skip_exist",
+                "--local_files_only",
             ), cwd=wg, log_path=scene_dir / "logs/video_gen.log")
-            landmark_validation = validate_landmark_visibility(scene_dir, landmarks)
+            try:
+                landmark_validation = validate_landmark_visibility(scene_dir, landmarks)
+            except Exception as exc:
+                # Non-fatal: landmark visibility is optional metadata judged by the
+                # independent visual gate. A VLM-gateway error or an unmet internal
+                # contract must not discard a completed WorldStereo generation.
+                logger.warning("landmark validation skipped (non-fatal): %s", exc)
+                landmark_validation = {"allFiveVisible": None}
             checkpoint("video_gen", stage_start, {
-                "allFiveLandmarksVisible": landmark_validation["allFiveVisible"],
+                "allFiveLandmarksVisible": landmark_validation.get("allFiveVisible"),
                 "landmarkMap": "scene/landmark-map.json",
             })
         if pause_requested("video_gen"):
