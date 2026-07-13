@@ -115,6 +115,7 @@ STAGE_MODELS = {
     ],
     "gen_gs_data": ["Ruicheng/moge-2-vitl-normal"],
     "gs_train": ["gsplat_maskgaussian", "HY-World 2.0 3DGS trainer"],
+    "viewer_export": ["antimatter15 .splat binary exporter"],
 }
 
 
@@ -293,6 +294,8 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
         files = [p for p in files if p.is_file()]
     elif stage == "gs_train":
         files = list(result_dir.rglob("*.ply")) + list(result_dir.rglob("*.spz"))
+    elif stage == "viewer_export":
+        files = [result_dir / "world.splat"]
     else:
         files = []
     if not files or any(not path.exists() or path.stat().st_size == 0 for path in files):
@@ -407,6 +410,58 @@ def finalize_landmark_mapping(scene_dir: Path, result_dir: Path) -> dict:
     return mapping
 
 
+def export_viewer_splat(result_dir: Path) -> Path:
+    """Convert the learned final 3DGS PLY to the viewer's binary .splat format."""
+    import numpy as np
+    from plyfile import PlyData
+
+    candidates = sorted(result_dir.rglob("*.ply"), key=lambda path: path.stat().st_mtime)
+    if not candidates:
+        raise RuntimeError("viewer export failed: no trained PLY found")
+    ply_path = candidates[-1]
+    vertices = PlyData.read(str(ply_path))["vertex"].data
+    required = {
+        "x", "y", "z", "opacity", "scale_0", "scale_1", "scale_2",
+        "f_dc_0", "f_dc_1", "f_dc_2", "rot_0", "rot_1", "rot_2", "rot_3",
+    }
+    missing = required - set(vertices.dtype.names or [])
+    if missing:
+        raise RuntimeError(f"viewer export failed: PLY missing properties {sorted(missing)}")
+    count = len(vertices)
+    opacity = 1.0 / (1.0 + np.exp(-vertices["opacity"].astype(np.float64)))
+    volume = np.exp(
+        vertices["scale_0"].astype(np.float64)
+        + vertices["scale_1"]
+        + vertices["scale_2"]
+    )
+    order = np.argsort(-(volume * opacity))
+    record = np.zeros(count, dtype=[
+        ("position", "<f4", 3), ("scale", "<f4", 3),
+        ("color", "u1", 4), ("rotation", "u1", 4),
+    ])
+    record["position"] = np.stack(
+        [vertices["x"], vertices["y"], vertices["z"]], axis=1
+    )
+    record["scale"] = np.exp(np.stack(
+        [vertices["scale_0"], vertices["scale_1"], vertices["scale_2"]], axis=1
+    ))
+    sh_c0 = 0.28209479177387814
+    rgb = np.stack(
+        [vertices["f_dc_0"], vertices["f_dc_1"], vertices["f_dc_2"]], axis=1
+    ) * sh_c0 + 0.5
+    record["color"][:, :3] = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
+    record["color"][:, 3] = np.clip(opacity * 255.0, 0, 255).astype(np.uint8)
+    rotation = np.stack([
+        vertices["rot_0"], vertices["rot_1"], vertices["rot_2"], vertices["rot_3"],
+    ], axis=1).astype(np.float64)
+    rotation /= np.linalg.norm(rotation, axis=1, keepdims=True) + 1e-12
+    record["rotation"] = np.clip(rotation * 128.0 + 128.0, 0, 255).astype(np.uint8)
+    output = result_dir / "world.splat"
+    output.write_bytes(record[order].tobytes())
+    logger.info("viewer splat exported from %s: %d gaussians, %.1fMB", ply_path, count, output.stat().st_size / 1e6)
+    return output
+
+
 # --------------------------------------------------------------------------
 # Stage 0a: seed image via litellm image API (no GPU time burned)
 # --------------------------------------------------------------------------
@@ -493,6 +548,7 @@ def torchrun(nproc: int, script: str, *args: str) -> list:
 UPLOAD_EXT_CONTENT_TYPES = {
     ".ply": "application/octet-stream",
     ".spz": "application/octet-stream",
+    ".splat": "application/octet-stream",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".mp4": "video/mp4",
@@ -822,16 +878,29 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "landmarkMap": "scene/landmark-map.json",
             })
 
+        # Post-training viewer export; this converts learned 3DGS, not a pano shell.
+        set_status("viewer_export")
+        if not completed("viewer_export"):
+            stage_start = time.time()
+            export_viewer_splat(result_dir)
+            checkpoint("viewer_export", stage_start)
+
         # Upload
         set_status("upload")
         manifest = upload_outputs(job_id, scene_dir, result_dir, prefix)
         provenance = publish_provenance_manifest(s3, job_id, prefix, prompt_meta)
+        staging_splat_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": Config.S3_BUCKET, "Key": f"{prefix}/gs/world.splat"},
+            ExpiresIn=604800,
+        )
         elapsed = int(time.time() - t_start)
         result = {
             "jobId": job_id, "state": "done", "elapsedSeconds": elapsed,
             "s3Prefix": f"s3://{Config.S3_BUCKET}/{prefix}/",
             "files": len(manifest),
             "estimatedCostUsd": provenance["totalEstimatedCostUsd"],
+            "stagingSplatUrl": staging_splat_url,
         }
         set_status("done", state="done", **result)
         r.rpush(Config.DONE_QUEUE, json.dumps(result))
