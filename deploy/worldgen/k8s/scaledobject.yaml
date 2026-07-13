@@ -1,17 +1,17 @@
-# KEDA scaler for hy-world-worker: scale 0->1 when a job lands on
-# pipeline:signal:worldgen, and STAY at 1 while a job is being processed
-# (the worker moves jobs to pipeline:worldgen:processing via BRPOPLPUSH; a
+# KEDA scaler for the isolated full-stack worker: scale 0->1 when a job lands
+# on pipeline:signal:worldgen-full, and STAY at 1 while a job is being processed
+# (the worker moves jobs to pipeline:worldgen-full:processing via BRPOPLPUSH; a
 # second trigger watches that list so a multi-hour generation isn't scaled
 # away mid-run). No fallback block on purpose: a scaler error must not pin an
 # idle 4-GPU node.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: worldgen-scaler
+  name: worldgen-full-scaler
   namespace: aicart
 spec:
   scaleTargetRef:
-    name: hy-world-worker
+    name: hy-world-full-worker
   minReplicaCount: 0
   maxReplicaCount: 1
   pollingInterval: 15
@@ -23,7 +23,7 @@ spec:
     metadata:
       address: content-factory-redis.aicart.svc.cluster.local:6379
       databaseIndex: "0"
-      listName: pipeline:signal:worldgen
+      listName: pipeline:signal:worldgen-full
       listLength: "1"
       activationListLength: "0"
   - type: redis
@@ -32,6 +32,6 @@ spec:
     metadata:
       address: content-factory-redis.aicart.svc.cluster.local:6379
       databaseIndex: "0"
-      listName: pipeline:worldgen:processing
+      listName: pipeline:worldgen-full:processing
       listLength: "1"
       activationListLength: "0"

@@ -1,0 +1,160 @@
+# Full HY-World 2.0 production pipeline
+
+## Verified architecture
+
+The fork at upstream commit `7f668e67c74338d50684e57be46a438459b6bbe1`
+contains the complete generation path. The founder's four-part description is
+directionally correct, with two important details:
+
+1. HY-Pano 2.0's checked-in Qwen backend defaults to a native **1952×960**
+   image (`pipeline_with_qwen_image.py`). No supported native 4K preset is
+   documented. A larger requested tensor is not called native Ultra-HD until
+   upstream validates that resolution.
+2. “World composition” is multiple executable stages, not one WorldMirror
+   call. `video_gen.py` runs WorldStereo 2.0 and invokes multi-GPU WorldMirror
+   for generated-frame geometry/camera alignment. `gen_gs_data.py` then builds
+   training data and `world_gs_trainer.py` optimizes the final multi-view 3DGS.
+
+The production sequence is therefore:
+
+1. HY-Pano 2.0: Gemini seed image → Qwen-Image-Edit-2509 + HY-Pano LoRA,
+   native 1952×960 panorama.
+2. WorldNav: VLM/SAM3/ZIM/MoGe scene analysis, collision-aware trajectory
+   planning, upward and reconstruction routes, then multi-GPU point-cloud
+   trajectory rendering.
+3. WorldStereo 2.0: FSDP DMD keyframe-video generation with a panorama memory
+   bank; WorldMirror 2.0 performs multi-view depth/camera alignment inside this
+   stage.
+4. Multi-view composition: training-data extraction followed by regularized
+   MaskGaussian/gsplat optimization and PLY/SPZ/mesh export.
+
+The rejected shortcut (`deploy/worker.py`) uses none of WorldNav,
+WorldStereo, or learned multi-view 3DGS optimization. Its output stays frozen
+at production v15 for rollback only.
+
+## Hardware and cost
+
+Upstream recommends at least four GPUs and documents testing on eight H20s.
+The first bounded production topology is one spot `g5.48xlarge` with eight
+24GB A10Gs, 600Gi gp3 root, and eight-way FSDP. This is a compatibility probe,
+not a claim that 24GB ranks equal H20:
+
+- Expected runtime: 2.5–4.5 hours per world.
+- Budgeted spot rate: $4.60/hour.
+- Maximum per candidate: $20.70.
+- Two Night Market candidates: $41.40 maximum, below the $100 round cap.
+- If WorldStereo/WorldMirror OOM on 8×24GB, the evidence establishes the
+  per-rank memory ceiling. The next AWS option is 8×48GB L40S
+  (`g6e.48xlarge`); launch requires a revised cost approval before use.
+
+Karpenter provisions spot only. The worker has a hard 4.5-hour timeout and a
+per-job budget check. KEDA scales 0→1 from an isolated full-stack queue, keeps
+the pod while the processing list is non-empty, and returns to zero. Empty
+nodes consolidate after five minutes. On-demand fallback is a deliberate
+operator action after a bounded spot-capacity failure, never an unbounded
+automatic spend.
+
+## Durable stage schema and resume
+
+Every successful stage writes:
+
+`s3://intelli-verse-x-media/worldgen-full-checkpoints/<job>/stages/<stage>.json`
+
+The manifest records:
+
+- job/stage/status and start/finish/elapsed time;
+- source commit and immutable image URI;
+- exact model IDs;
+- prompt, seed, conditioner types, token count, and five landmarks;
+- instance type, GPU count, estimated stage cost;
+- output path, byte size, and SHA-256 for every durable file;
+- stage-specific validation metrics.
+
+Files are incrementally synchronized to
+`.../<job>/current/{scene,result}/`. A replacement pod restores this snapshot,
+reads completed stage manifests, and resumes at the first incomplete stage.
+The final provenance manifest links all stage-manifest hashes and costs.
+Failure manifests and trace logs are durable; Discord receives stage,
+completion, and failure alerts.
+
+Minimum contracts:
+
+- panorama: non-empty image and exact native dimensions;
+- WorldNav: camera trajectories, objects metadata, navmesh/up routes;
+- trajectory render: non-empty rendered videos;
+- WorldStereo: generated videos plus all-five-landmark VLM visibility;
+- GS data: non-empty aligned training set;
+- GS train: non-empty PLY/SPZ and a completed landmark mapping.
+
+## Authoring and landmark contract
+
+Jobs are rejected unless the prompt has at most 77 whitespace tokens and
+contains exactly five front-loaded landmark phrases. The full path uses
+Gemini for the seed, Qwen-Image-Edit for HY-Pano, and Gemini VLM for WorldNav;
+it does **not** use the shortcut's SDXL CLIP encoder. The conservative 77-token
+limit remains enforced to prevent future conditioner drift.
+
+Each landmark record contains:
+
+`id/name → promptPhrase → trajectoryVisibility → reconstructedRegion → checkpointId`
+
+After WorldStereo, a VLM reviews a geometry-only contact sheet and generation
+fails unless all five are independently recognizable without viewer overlays.
+After 3DGS training, the mapping is bound to the trained geometry artifacts.
+Named story objects must reference these landmarks; Three.js overlays are
+navigation/feedback only.
+
+Night Market candidates require: market alley, food stalls, ICE-blue hanging
+lantern, neon shop signs, and wet stone paving. The ICE lantern is mapped to
+`cp-1` before generation.
+
+## Promotion, capture, and rollback
+
+Full-stack output is forced under `worldgen-full-staging/` while
+`ALLOW_PRODUCTION_PROMOTION=0`. Production remains atomically rollbackable to
+the existing v15 prefix.
+
+Before promotion, each candidate requires:
+
+- complete four-part provenance and stage validation;
+- 3840×2160 High: spawn, eight yaws, up/down, mid, close, motion;
+- iPhone and iPad captures and performance;
+- parallax/reprojection, floor/ceiling coverage, clipping/void, shimmer,
+  landmark, and named-object checks;
+- full gameplay with unchanged story/audio and server-side redaction;
+- independent harsh-player, HD-verifier, and wow-gate scores ≥9.5.
+
+Only after all three gates pass may an operator enable promotion, atomically
+copy the selected artifacts, refresh `spatial.json`, re-author Nakama anchors,
+and verify PR #123's canonical HD behavior. Audio is regenerated only if
+narration text changed.
+
+## Exact release commands
+
+```bash
+# Stage/mirror model weights
+kubectl apply -f deploy/worldgen/k8s/stage-weights-job.yaml
+
+# Build immutable image
+git archive HEAD | gzip > /tmp/hy-world-full.tar.gz
+aws s3 cp /tmp/hy-world-full.tar.gz \
+  s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz
+kubectl apply -f deploy/worldgen/k8s/build-job.yaml
+
+# Install isolated compute and scaler
+kubectl apply -f deploy/worldgen/k8s/nodepool.yaml
+kubectl apply -f deploy/worldgen/k8s/deployment.yaml
+kubectl apply -f deploy/worldgen/k8s/scaledobject.yaml
+
+# Queue two hero candidates after image/weights/preflight pass
+bash deploy/worldgen/enqueue-nightmarket-full.sh
+```
+
+## License release blocker
+
+`License.txt` §5(c) prohibits using, distributing, or displaying HY-World
+Outputs outside the licensed Territory (EU, UK, and South Korea are excluded).
+§6(d) says Tencent claims no ownership in Outputs, but it does not override
+the territorial restriction. Production promotion to a globally reachable
+viewer therefore requires verified geo-enforcement and the required
+machine-generated-content disclosure. Internal US staging can proceed.

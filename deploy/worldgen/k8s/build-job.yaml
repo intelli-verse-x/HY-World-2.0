@@ -62,7 +62,7 @@ spec:
         - --local=context=/workspace/ctx
         - --local=dockerfile=/workspace/ctx/deploy/worldgen
         - --opt=filename=Dockerfile
-        - --output=type=image,name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1,push=true
+        - --output=type=image,name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker:v2,push=true
         env:
         - name: BUILDKITD_FLAGS
           value: --oci-worker-no-process-sandbox --root /workspace/buildkit
