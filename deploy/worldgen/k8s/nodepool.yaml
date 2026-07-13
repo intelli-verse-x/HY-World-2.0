@@ -1,7 +1,9 @@
 # Dedicated full-stack HY-World node class. WorldStereo is upstream-tested
 # with >=4 GPUs and reports 8×H20. Preflight proved 24GB A10G OOM at native
-# HY-Pano resolution; stage A runs on one 48GB L40S, then checkpoints before
-# the four-GPU WorldStereo/3DGS topology resumes it.
+# HY-Pano resolution; stage A runs on one 48GB L40S with 128Gi host memory for
+# sequential CPU offload, then checkpoints before the four-GPU
+# WorldStereo/3DGS topology resumes it. The smaller g6e.xlarge was rejected
+# after its 32Gi host memory starved kubelet during model offload.
 # The 1Ti
 # ephemeral root holds the expanded ~250Gi S3 model mirror plus intermediates;
 # durable checkpoints are uploaded to S3 after every stage.
@@ -52,8 +54,8 @@ spec:
     consolidateAfter: 5m
     consolidationPolicy: WhenEmptyOrUnderutilized
   limits:
-    cpu: "4"
-    memory: 32Gi
+    cpu: "16"
+    memory: 128Gi
     nvidia.com/gpu: "1"
   template:
     metadata:
@@ -76,10 +78,12 @@ spec:
         values: [amd64]
       - key: topology.kubernetes.io/zone
         operator: In
-        values: [us-east-1a, us-east-1b, us-east-1d]
+        # EC2NodeClass currently discovers subnets in 1a/1b/1c. Include every
+        # effective zone; listing 1d alone cannot help without a tagged subnet.
+        values: [us-east-1a, us-east-1b, us-east-1c]
       - key: node.kubernetes.io/instance-type
         operator: In
-        values: [g6e.xlarge]
+        values: [g6e.4xlarge]
       taints:
       - effect: NoSchedule
         key: nvidia.com/gpu

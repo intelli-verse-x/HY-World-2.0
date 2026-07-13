@@ -32,7 +32,7 @@ spec:
             - matchExpressions:
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: [g6e.xlarge]
+                values: [g6e.4xlarge]
       tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu
@@ -70,7 +70,7 @@ spec:
           name: model-cache
       containers:
       - name: worker
-        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:7ec81634b68391f40a47c073264b50e854b33d3709b8d9656bc602889134dc93
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:3028ec285191dd79e65bde24c078c9ae7f15a5b53c9dda2a8ee2a05677a0c2d2
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD
@@ -117,13 +117,13 @@ spec:
         - name: NGPU
           value: "1"
         - name: SOURCE_COMMIT
-          value: ef5d341
+          value: 4be07e3
         - name: IMAGE_URI
-          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:7ec81634b68391f40a47c073264b50e854b33d3709b8d9656bc602889134dc93
+          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:3028ec285191dd79e65bde24c078c9ae7f15a5b53c9dda2a8ee2a05677a0c2d2
         - name: INSTANCE_TYPE
-          value: g6e.xlarge
+          value: g6e.4xlarge
         - name: INSTANCE_HOURLY_USD
-          value: "1.861"
+          value: "3.0042"
         - name: MAX_JOB_SECONDS
           value: "16200"
         - name: NVIDIA_VISIBLE_DEVICES
@@ -132,12 +132,12 @@ spec:
           value: expandable_segments:True
         resources:
           requests:
-            cpu: "3"
-            memory: 26Gi
+            cpu: "12"
+            memory: 96Gi
             nvidia.com/gpu: "1"
           limits:
-            cpu: "4"
-            memory: 30Gi
+            cpu: "15"
+            memory: 118Gi
             nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /models/hf-cache
