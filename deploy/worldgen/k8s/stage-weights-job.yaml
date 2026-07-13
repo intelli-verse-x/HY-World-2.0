@@ -67,8 +67,8 @@ spec:
             --exclude 'hub/*/blobs/*' --exclude 'hub/.locks/*'
           echo "=== done"
         resources:
-          requests: {cpu: "2", memory: 5Gi}
-          limits: {cpu: "3500m", memory: 10Gi}
+          requests: {cpu: "500m", memory: 2Gi}
+          limits: {cpu: "2", memory: 4Gi}
         volumeMounts:
         - mountPath: /root/.cache/huggingface
           name: scratch

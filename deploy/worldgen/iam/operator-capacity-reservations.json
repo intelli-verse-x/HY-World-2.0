@@ -111,6 +111,19 @@
       }
     },
     {
+      "Sid": "LaunchTaggedOregonA100",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:us-west-2:970547373533:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:InstanceType": "p4de.24xlarge",
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack",
+          "aws:RequestTag/Workload": "worldgen-fullstack"
+        }
+      }
+    },
+    {
       "Sid": "UseApprovedPortableRunnerResources",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
@@ -167,6 +180,17 @@
         "ecr:PutReplicationConfiguration"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "PassPortableRunnerRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::970547373533:role/hy-world-portable-runner",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
     }
   ]
 }
