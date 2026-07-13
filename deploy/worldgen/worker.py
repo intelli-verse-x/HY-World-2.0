@@ -454,6 +454,7 @@ def generate_panorama(seed_image: Path, prompt: str, out_path: Path, seed: int =
 # Subprocess plumbing for pipeline stages
 # --------------------------------------------------------------------------
 _DEADLINE = 0.0
+_TERMINATING = False
 
 
 def remaining_seconds() -> int:
@@ -867,8 +868,10 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
         stop_hb.set()
         hb_thread.join(timeout=5)
         r.delete(hb_key)
-        # Always clear the processing entry so KEDA can scale back to zero.
-        r.lrem(Config.PROCESSING_QUEUE, 0, raw_job)
+        # Keep the processing entry on SIGTERM. KEDA provisions a replacement,
+        # which restores the latest durable stage and claims the stale entry.
+        if not _TERMINATING:
+            r.lrem(Config.PROCESSING_QUEUE, 0, raw_job)
 
 
 def recover_stale_jobs(r: redis.Redis) -> list:
@@ -886,7 +889,12 @@ def recover_stale_jobs(r: redis.Redis) -> list:
 
 
 def main() -> None:
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    def terminate(*_):
+        global _TERMINATING
+        _TERMINATING = True
+        raise SystemExit(143)
+
+    signal.signal(signal.SIGTERM, terminate)
     r = redis_client()
     r.ping()
     logger.info(
