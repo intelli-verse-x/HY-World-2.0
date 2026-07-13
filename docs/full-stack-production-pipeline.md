@@ -36,7 +36,7 @@ at production v15 for rollback only.
 
 Upstream recommends at least four GPUs and documents testing on eight H20s.
 The first bounded production topology is one spot `g5.48xlarge` with eight
-24GB A10Gs, 600Gi gp3 root, and eight-way FSDP. This is a compatibility probe,
+24GB A10Gs, a 1Ti gp3 root, and eight-way FSDP. This is a compatibility probe,
 not a claim that 24GB ranks equal H20:
 
 - Expected runtime: 2.5–4.5 hours per world.
@@ -52,7 +52,10 @@ per-job budget check. KEDA scales 0→1 from an isolated full-stack queue, keeps
 the pod while the processing list is non-empty, and returns to zero. Empty
 nodes consolidate after five minutes. On-demand fallback is a deliberate
 operator action after a bounded spot-capacity failure, never an unbounded
-automatic spend.
+automatic spend. After 20 minutes without a NodeClaim launch, capture the
+Karpenter events and explicitly add `on-demand` to the NodePool only after
+recalculating `INSTANCE_HOURLY_USD`, the job budget, and the round cap. Revert
+the capacity type immediately after the candidate.
 
 ## Durable stage schema and resume
 
@@ -64,7 +67,7 @@ The manifest records:
 
 - job/stage/status and start/finish/elapsed time;
 - source commit and immutable image URI;
-- exact model IDs;
+- exact model IDs and immutable Hugging Face revisions;
 - prompt, seed, conditioner types, token count, and five landmarks;
 - instance type, GPU count, estimated stage cost;
 - output path, byte size, and SHA-256 for every durable file;
