@@ -32,7 +32,7 @@ spec:
             - matchExpressions:
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: [g6e.4xlarge]
+                values: [p5.4xlarge]
       tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu
@@ -121,11 +121,11 @@ spec:
         - name: IMAGE_URI
           value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
         - name: INSTANCE_TYPE
-          value: g6e.4xlarge
+          value: p5.4xlarge
         - name: INSTANCE_HOURLY_USD
-          value: "3.0042"
+          value: "6.88"
         - name: MAX_JOB_SECONDS
-          value: "16200"
+          value: "3600"
         - name: NVIDIA_VISIBLE_DEVICES
           value: all
         - name: PYTORCH_CUDA_ALLOC_CONF
@@ -133,11 +133,11 @@ spec:
         resources:
           requests:
             cpu: "12"
-            memory: 96Gi
+            memory: 200Gi
             nvidia.com/gpu: "1"
           limits:
             cpu: "15"
-            memory: 118Gi
+            memory: 240Gi
             nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /models/hf-cache
