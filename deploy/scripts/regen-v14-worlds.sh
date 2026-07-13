@@ -37,7 +37,11 @@ declare -A PROMPTS=(
   [world-museum]="Interior of a majestic natural-history museum great hall: soaring vaulted glass ceiling, marble columns, central dinosaur skeleton on a stone plinth, ornate display cases with artifacts, warm golden afternoon light streaming in, brass railings, polished stone floor with subtle reflections, awe-inspiring scholarly mood, photorealistic architectural detail."
 )
 
-WORLDS=("${@:-world-nightmarket world-lodge world-gameshow world-manor world-museum}")
+if [[ $# -eq 0 ]]; then
+  WORLDS=(world-nightmarket world-lodge world-gameshow world-manor world-museum)
+else
+  WORLDS=("$@")
+fi
 REDIS_PW="$(kubectl -n "$NAMESPACE" get secret keda-redis-auth -o jsonpath='{.data.password}' | base64 -d)"
 
 for jobId in "${WORLDS[@]}"; do
