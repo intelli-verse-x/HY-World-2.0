@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: hy-world-worker
+  name: hy-world-full-worker
   namespace: aicart
   labels:
-    app: hy-world-worker
+    app: hy-world-full-worker
     workload-type: gpu
 spec:
   replicas: 0            # scaled by KEDA (worldgen-scaler), 0 <-> 1
   selector:
     matchLabels:
-      app: hy-world-worker
+      app: hy-world-full-worker
   strategy:
     type: Recreate
   template:
@@ -18,13 +18,13 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
       labels:
-        app: hy-world-worker
+        app: hy-world-full-worker
         workload-type: gpu
     spec:
       serviceAccountName: ssm-access
       terminationGracePeriodSeconds: 120
       nodeSelector:
-        gpu-class: multi-24gb      # gpu-workloads-multi nodepool (4-GPU spot)
+        gpu-class: hy-world-full
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -32,14 +32,14 @@ spec:
             - matchExpressions:
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: [g6.12xlarge, g5.12xlarge]
+                values: [p5.4xlarge]
       tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu
         operator: Exists
       initContainers:
-      # Same pattern as vllm-chat's s3-model-sync: hydrate the HF cache on the
-      # scratch PVC from the S3 mirror (no-op when already warm). Uses the S3
+      # Same pattern as vllm-chat's s3-model-sync: hydrate the HF cache from
+      # the private S3 mirror. Uses the S3
       # gateway endpoint, no NAT.
       - name: s3-model-sync
         image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
@@ -48,12 +48,16 @@ spec:
         - -c
         - |
           set -u
-          SRC=s3://intelli-verse-x-media/models/hy-world/hf
-          DST=/root/.cache/huggingface
+          SRC=s3://intelliverse-hyworld-private-us-east-1/models/hy-world/hf
+          DST=/models/hf-cache
           aws configure set default.s3.max_concurrent_requests 32
           if aws s3 ls "$SRC/" >/dev/null 2>&1; then
             echo "Syncing $SRC -> $DST"
-            time aws s3 sync "$SRC" "$DST" --only-show-errors && echo "S3 model sync OK" \
+            # Snapshot objects were dereferenced to regular files during the
+            # mirror. Skip duplicate HF blob objects and lock metadata.
+            time aws s3 sync "$SRC" "$DST" --only-show-errors \
+              --exclude 'hub/*/blobs/*' --exclude 'hub/.locks/*' \
+              && echo "S3 model sync OK" \
               || echo "WARN: s3 sync failed; workers will fall back to HF download via NAT"
           else
             echo "WARN: $SRC not mirrored yet; workers will fall back to HF download via NAT"
@@ -62,12 +66,11 @@ spec:
           requests: {cpu: "2", memory: 1Gi}
           limits: {cpu: "8", memory: 4Gi}
         volumeMounts:
-        - mountPath: /root/.cache/huggingface
-          name: scratch
-          subPath: hf
+        - mountPath: /models/hf-cache
+          name: model-cache
       containers:
       - name: worker
-        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-worker:v1
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD
@@ -80,8 +83,25 @@ spec:
             secretKeyRef:
               name: litellm-secrets
               key: LITELLM_MASTER_KEY
+        - name: DISCORD_WEBHOOK
+          valueFrom:
+            secretKeyRef:
+              name: admin-portal-discord-webhook
+              key: DISCORD_PORTAL_WEBHOOK_URL
         - name: AWS_S3_BUCKET_NAME
-          value: intelli-verse-x-media
+          value: intelliverse-hyworld-private-us-east-1
+        - name: WORLDGEN_QUEUE
+          value: pipeline:signal:worldgen-full
+        - name: WORLDGEN_PROCESSING_QUEUE
+          value: pipeline:worldgen-full:processing
+        - name: WORLDGEN_DONE_QUEUE
+          value: pipeline:done:worldgen-full
+        - name: S3_CHECKPOINT_BASE
+          value: worldgen-full-checkpoints
+        - name: S3_OUTPUT_BASE
+          value: worldgen-full-staging
+        - name: ALLOW_PRODUCTION_PROMOTION
+          value: "0"
         - name: AWS_REGION
           value: us-east-1
         - name: SAM3_REPO_ID           # facebook/sam3 is HF-gated; ungated mirror
@@ -92,34 +112,47 @@ spec:
           value: gemini/gemini-3.1-flash-image
         - name: SCENES_DIR
           value: /workspace/scenes
+        - name: HF_HOME
+          value: /models/hf-cache
+        - name: NGPU
+          value: "1"
+        - name: SOURCE_COMMIT
+          value: 248de8b
+        - name: IMAGE_URI
+          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:6efd7cfc4a80516fbe2a63c85e4f9e2ef3bc57397e74e8525af13ac8993a7008
+        - name: INSTANCE_TYPE
+          value: p5.4xlarge
+        - name: INSTANCE_HOURLY_USD
+          value: "6.88"
         - name: MAX_JOB_SECONDS
-          value: "16200"
+          value: "3600"
         - name: NVIDIA_VISIBLE_DEVICES
           value: all
         - name: PYTORCH_CUDA_ALLOC_CONF
           value: expandable_segments:True
         resources:
           requests:
-            cpu: "16"
-            memory: 96Gi
-            nvidia.com/gpu: "4"
+            cpu: "12"
+            memory: 200Gi
+            nvidia.com/gpu: "1"
           limits:
-            cpu: "40"
-            memory: 160Gi
-            nvidia.com/gpu: "4"
+            cpu: "15"
+            memory: 240Gi
+            nvidia.com/gpu: "1"
         volumeMounts:
-        - mountPath: /root/.cache/huggingface
-          name: scratch
-          subPath: hf
+        - mountPath: /models/hf-cache
+          name: model-cache
         - mountPath: /workspace/scenes
-          name: scratch
-          subPath: scenes
+          name: scenes
         - mountPath: /dev/shm
           name: shm
       volumes:
-      - name: scratch
-        persistentVolumeClaim:
-          claimName: scratch-mirror-hy-world
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 350Gi
+      - name: scenes
+        emptyDir:
+          sizeLimit: 500Gi
       - name: shm
         emptyDir:
           medium: Memory

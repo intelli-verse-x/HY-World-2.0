@@ -40,14 +40,19 @@ RUN pip install --no-cache-dir --extra-index-url https://miropsota.github.io/tor
 RUN grep -v 'pytorch3d' requirements_git.txt > /tmp/req_git.txt \
     && pip install --no-cache-dir --no-build-isolation -r /tmp/req_git.txt
 
-# Worker-only deps
-RUN pip install --no-cache-dir redis boto3 httpx "huggingface_hub[hf_transfer]"
+# Worker-only deps. ORT 1.22 is the CUDA-12 build; newer wheels currently link
+# libcudart.so.13 and cannot load in the upstream CUDA-12.8 base image.
+RUN pip install --no-cache-dir redis boto3 httpx "huggingface_hub[hf_transfer]" \
+    && pip install --no-cache-dir --no-deps --force-reinstall "onnxruntime-gpu==1.22.0"
 
 # ---- Repo code ----
 COPY . /app
 
 # gsplat_maskgaussian (custom gsplat with MaskGaussian) — CUDA build
-RUN cd /app/hyworld2/worldgen/third_party/gsplat_maskgaussian \
+RUN mkdir -p /app/hyworld2/worldgen/third_party/gsplat_maskgaussian/gsplat/cuda/csrc/third_party \
+    && git clone --depth 1 https://github.com/g-truc/glm.git \
+       /app/hyworld2/worldgen/third_party/gsplat_maskgaussian/gsplat/cuda/csrc/third_party/glm \
+    && cd /app/hyworld2/worldgen/third_party/gsplat_maskgaussian \
     && pip install --no-cache-dir --no-build-isolation -e .
 
 # recastnavigation (git submodule; fetched here in case the build context

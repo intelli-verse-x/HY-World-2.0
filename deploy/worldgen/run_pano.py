@@ -49,7 +49,14 @@ def main() -> None:
         weight_name="pytorch_lora_weights.safetensors",
         torch_dtype=torch.bfloat16,
     )
-    print("[pano] LoRA loaded; enabling model CPU offload")
+    # Materialize the HY-Pano adapter into the base transformer before adding
+    # Accelerate's CPU-offload hooks. Leaving PEFT LoRA modules live across
+    # offload boundaries can strand adapter tensors after the first denoising
+    # step; on L40S this surfaced as an illegal CUDA memory access in
+    # peft.tuners.lora.layer during step two.
+    pipe.fuse_lora(lora_scale=1.0)
+    pipe.unload_lora_weights()
+    print("[pano] LoRA fused; enabling model CPU offload")
     pipe.enable_model_cpu_offload()
 
     from PIL import Image

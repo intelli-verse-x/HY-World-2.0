@@ -1,13 +1,50 @@
-# New Karpenter NodePool for 4-GPU spot nodes (g6.12xlarge / g5.12xlarge).
-# The existing gpu-workloads-* pools only offer 1-GPU g6 shapes or g5 up to
-# 12xlarge with the nvidia-a10g label; this pool spans both 4-GPU shapes so
-# Karpenter can pick the cheapest spot capacity. Reuses the existing
-# gpu-workloads EC2NodeClass (200Gi gp3 root). Disruption settings copied
-# from the gpu-workloads pool (15-min empty-node reclaim).
+# Dedicated full-stack HY-World node class. WorldStereo is upstream-tested
+# with >=4 GPUs and reports 8×H20. Preflight proved 24GB A10G OOM at native
+# HY-Pano resolution; stage A runs on one 80GB H100 rank, then checkpoints
+# before the WorldStereo/3DGS topology resumes it. Single-rank 48GB L40S
+# attempts were rejected after model execution consumed >42GiB and failed
+# in cuBLAS/LoRA kernels. p5.4xlarge is the no-waste 80GB-rank target once
+# AWS supplies on-demand or reserved capacity.
+# The 1Ti
+# ephemeral root holds the expanded ~250Gi S3 model mirror plus intermediates;
+# durable checkpoints are uploaded to S3 after every stage.
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: hy-world-full
+spec:
+  amiSelectorTerms:
+  - alias: al2023@latest
+  blockDeviceMappings:
+  - deviceName: /dev/xvda
+    ebs:
+      deleteOnTermination: true
+      iops: 12000
+      throughput: 500
+      volumeSize: 1000Gi
+      volumeType: gp3
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 2
+    httpTokens: required
+  role: KarpenterNodeRole-ai-cart-auto-cluster
+  securityGroupSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: ai-cart-auto-cluster
+  subnetSelectorTerms:
+  - tags:
+      karpenter.sh/discovery: ai-cart-auto-cluster
+  tags:
+    Environment: production
+    InspectorEc2Exclusion: "true"
+    ManagedBy: karpenter
+    Team: content-factory
+---
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:
-  name: gpu-workloads-multi
+  name: hy-world-full
 spec:
   disruption:
     budgets:
@@ -15,34 +52,40 @@ spec:
       reasons: [Empty]
     - nodes: "1"
       reasons: [Underutilized, Drifted]
-    consolidateAfter: 15m
+    consolidateAfter: 5m
     consolidationPolicy: WhenEmptyOrUnderutilized
   limits:
-    cpu: "96"
-    memory: 384Gi
-    nvidia.com/gpu: "8"
+    cpu: "16"
+    memory: 256Gi
+    nvidia.com/gpu: "1"
   template:
     metadata:
       labels:
         workload-type: gpu
-        gpu-class: multi-24gb
+        gpu-class: hy-world-full
     spec:
       expireAfter: 168h
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
-        name: gpu-workloads
+        name: hy-world-full
       requirements:
       - key: karpenter.sh/capacity-type
         operator: In
-        values: [spot]
+        # Bounded HY-Pano fallback after 24GB/rank A10G OOM.
+        values: [on-demand]
       - key: kubernetes.io/arch
         operator: In
         values: [amd64]
+      - key: topology.kubernetes.io/zone
+        operator: In
+        # Keep every discovered/offered zone eligible once AWS capacity or an
+        # open capacity reservation becomes available.
+        values: [us-east-1a, us-east-1b, us-east-1c]
       - key: node.kubernetes.io/instance-type
         operator: In
-        values: [g6.12xlarge, g5.12xlarge]
+        values: [p5.4xlarge]
       taints:
       - effect: NoSchedule
         key: nvidia.com/gpu
-  weight: 40
+  weight: 50
