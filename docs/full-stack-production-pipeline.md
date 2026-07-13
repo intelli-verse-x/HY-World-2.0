@@ -61,7 +61,7 @@ the capacity type immediately after the candidate.
 
 Every successful stage writes:
 
-`s3://intelli-verse-x-media/worldgen-full-checkpoints/<job>/stages/<stage>.json`
+`s3://intelliverse-hyworld-private-us-east-1/worldgen-full-checkpoints/<job>/stages/<stage>.json`
 
 The manifest records:
 

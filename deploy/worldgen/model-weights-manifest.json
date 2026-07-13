@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "stagedAt": "2026-07-13T05:26:00Z",
-  "bucket": "intelli-verse-x-media",
+  "bucket": "intelliverse-hyworld-private-us-east-1",
   "prefix": "models/hy-world/hf",
   "objectCount": 131,
   "runtimeBytes": 196695002459,

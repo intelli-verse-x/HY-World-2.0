@@ -397,7 +397,10 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
         import numpy as np
         from plyfile import PlyData
         files = list(result_dir.rglob("*.ply")) + list(result_dir.rglob("*.spz"))
-        ply_candidates = [path for path in files if path.suffix == ".ply"]
+        ply_candidates = [
+            path for path in files
+            if path.suffix == ".ply" and path.name.startswith("point_cloud_")
+        ]
         if ply_candidates:
             vertices = PlyData.read(str(max(ply_candidates, key=lambda path: path.stat().st_mtime)))["vertex"].data
             scales = np.exp(np.stack([
@@ -417,7 +420,11 @@ def validate_stage(stage: str, scene_dir: Path, result_dir: Path) -> dict:
             if gs_metrics["finitePositionPct"] < 100 or gs_metrics["gaussianCount"] < 100_000:
                 raise RuntimeError(f"3DGS contract failed: {gs_metrics}")
     elif stage == "viewer_export":
-        files = [result_dir / "world.splat"]
+        files = [
+            result_dir / "world-mobile.splat",
+            result_dir / "world-desktop.splat",
+            result_dir / "world.splat",
+        ]
     else:
         files = []
     if not files or any(not path.exists() or path.stat().st_size == 0 for path in files):
@@ -677,9 +684,21 @@ def export_viewer_splat(result_dir: Path) -> Path:
     ], axis=1).astype(np.float64)
     rotation /= np.linalg.norm(rotation, axis=1, keepdims=True) + 1e-12
     record["rotation"] = np.clip(rotation * 128.0 + 128.0, 0, 255).astype(np.uint8)
+    sorted_record = record[order]
+    tiers = {
+        "world-mobile.splat": min(count, 2_000_000),   # <=64 MB
+        "world-desktop.splat": min(count, 4_000_000), # <=128 MB
+        "world.splat": count,
+    }
+    for name, tier_count in tiers.items():
+        tier_path = result_dir / name
+        tier_path.write_bytes(sorted_record[:tier_count].tobytes())
+        logger.info(
+            "viewer tier %s exported: %d gaussians, %.1fMB",
+            name, tier_count, tier_path.stat().st_size / 1e6,
+        )
     output = result_dir / "world.splat"
-    output.write_bytes(record[order].tobytes())
-    logger.info("viewer splat exported from %s: %d gaussians, %.1fMB", ply_path, count, output.stat().st_size / 1e6)
+    logger.info("viewer splats exported from learned PLY %s", ply_path)
     return output
 
 
@@ -1110,18 +1129,26 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
         set_status("upload")
         manifest = upload_outputs(job_id, scene_dir, result_dir, prefix)
         provenance = publish_provenance_manifest(s3, job_id, prefix, prompt_meta)
-        staging_splat_url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": Config.S3_BUCKET, "Key": f"{prefix}/gs/world.splat"},
-            ExpiresIn=604800,
-        )
+        staging_splat_urls = {
+            tier: s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": Config.S3_BUCKET, "Key": f"{prefix}/gs/{filename}"},
+                ExpiresIn=604800,
+            )
+            for tier, filename in {
+                "mobile": "world-mobile.splat",
+                "desktop": "world-desktop.splat",
+                "full": "world.splat",
+            }.items()
+        }
         elapsed = int(time.time() - t_start)
         result = {
             "jobId": job_id, "state": "done", "elapsedSeconds": elapsed,
             "s3Prefix": f"s3://{Config.S3_BUCKET}/{prefix}/",
             "files": len(manifest),
             "estimatedCostUsd": provenance["totalEstimatedCostUsd"],
-            "stagingSplatUrl": staging_splat_url,
+            "stagingSplatUrl": staging_splat_urls["desktop"],
+            "stagingSplatUrls": staging_splat_urls,
         }
         set_status("done", state="done", **result)
         r.rpush(Config.DONE_QUEUE, json.dumps(result))

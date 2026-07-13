@@ -48,7 +48,7 @@ spec:
         - -c
         - |
           set -u
-          SRC=s3://intelli-verse-x-media/models/hy-world/hf
+          SRC=s3://intelliverse-hyworld-private-us-east-1/models/hy-world/hf
           DST=/models/hf-cache
           aws configure set default.s3.max_concurrent_requests 32
           if aws s3 ls "$SRC/" >/dev/null 2>&1; then
@@ -89,7 +89,7 @@ spec:
               name: admin-portal-discord-webhook
               key: DISCORD_PORTAL_WEBHOOK_URL
         - name: AWS_S3_BUCKET_NAME
-          value: intelli-verse-x-media
+          value: intelliverse-hyworld-private-us-east-1
         - name: WORLDGEN_QUEUE
           value: pipeline:signal:worldgen-full
         - name: WORLDGEN_PROCESSING_QUEUE

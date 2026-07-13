@@ -1,6 +1,6 @@
 # One-shot CPU job: download the HY-World 2.0 smoke-test weight set from
 # HuggingFace into the scratch PVC (HF cache layout), then mirror it to
-# s3://intelli-verse-x-media/models/hy-world/hf for the initContainer sync.
+# s3://intelliverse-hyworld-private-us-east-1/models/hy-world/hf for init sync.
 #
 # The full HY-World-2.0 HF repo is ~175 GB and HY-Pano's official
 # HunyuanImage-3 backend alone is ~170 GB (80B model, unusable on 24 GB
@@ -63,7 +63,7 @@ spec:
           aws configure set default.s3.max_concurrent_requests 32
           echo "=== mirroring to S3"
           time aws s3 sync /root/.cache/huggingface \
-            s3://intelli-verse-x-media/models/hy-world/hf --only-show-errors \
+            s3://intelliverse-hyworld-private-us-east-1/models/hy-world/hf --only-show-errors \
             --exclude 'hub/*/blobs/*' --exclude 'hub/.locks/*'
           echo "=== done"
         resources:
