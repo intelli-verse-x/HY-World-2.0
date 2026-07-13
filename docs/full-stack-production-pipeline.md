@@ -35,19 +35,18 @@ at production v15 for rollback only.
 ## Hardware and cost
 
 Upstream recommends at least four GPUs and documents testing on eight H20s.
-The first bounded production topology is one spot `g5.48xlarge` with eight
-24GB A10Gs, a 1Ti gp3 root, and eight-way FSDP. This is a compatibility probe,
-not a claim that 24GB ranks equal H20:
+The initial 8×24GB A10G compatibility probe loaded every Qwen component but
+OOMed at native 1952×960 step zero (44.7MiB free). The corrected bounded
+topology is on-demand `g6e.12xlarge`: four 48GB L40S, a 1Ti gp3 root, and
+four-way FSDP.
 
 - Expected runtime: 2.5–4.5 hours per world.
-- Budgeted spot rate: $4.60/hour.
-- Maximum per candidate: $20.70.
-- Two Night Market candidates: $41.40 maximum, below the $100 round cap.
-- If WorldStereo/WorldMirror OOM on 8×24GB, the evidence establishes the
-  per-rank memory ceiling. The next AWS option is 8×48GB L40S
-  (`g6e.48xlarge`); launch requires a revised cost approval before use.
+- On-demand L40S rate: $10.4926/hour.
+- Maximum per candidate: $47.22 at the 4.5-hour hard timeout.
+- Candidate B remains held until A's health and actual cost are known.
 
-Karpenter provisions spot only. The worker has a hard 4.5-hour timeout and a
+Karpenter normally provisions spot only; hero A uses the documented bounded
+on-demand fallback. The worker has a hard 4.5-hour timeout and a
 per-job budget check. KEDA scales 0→1 from an isolated full-stack queue, keeps
 the pod while the processing list is non-empty, and returns to zero. Empty
 nodes consolidate after five minutes. On-demand fallback is a deliberate
@@ -58,9 +57,10 @@ recalculating `INSTANCE_HOURLY_USD`, the job budget, and the round cap. Revert
 the capacity type immediately after the candidate.
 
 For the first Night Market A launch, the account's G/VT Spot quota was only
-64 vCPUs versus 192 required by `g5.48xlarge`. The bounded fallback therefore
-uses the available on-demand quota at $16.288/hour: 4.5 hours hard-caps A at
-$73.30. Candidate B stays held until A's actual cost and health are known.
+64 vCPUs versus 192 required by `g5.48xlarge`. After the A10G memory ceiling
+was measured, `g6e.12xlarge` reduced the request to 48 vCPUs while meeting
+upstream's four-GPU minimum and the 48GB/rank requirement. Preflight overhead
+plus A's $47.22 cap remains below the $100 round cap.
 
 ## Durable stage schema and resume
 
