@@ -81,6 +81,39 @@ was:
 No instance launched, so actual GPU and EBS cost is `$0`. No tagged reservation
 or portable instance remains active.
 
+## Founder-approved hourly fallback result
+
+The bounded hourly fallback was attempted without purchasing a Capacity Block.
+`p5.48xlarge` returned `InsufficientInstanceCapacity` in every offered zone in
+Virginia, Ohio, Oregon, and Northern California. `p5en.48xlarge` returned the
+same result in every offered zone in Virginia, Ohio, Oregon, and Northern
+California. Earlier probes had already exhausted every offered `p5.4xlarge`
+zone and every Oregon `p4de.24xlarge` zone.
+
+The exact verified Linux on-demand rates were `$55.04/hour` for `p5.48xlarge`
+in the three priority regions, `$68.80/hour` in Northern California,
+`$63.296/hour` for `p5en.48xlarge` in the three priority regions, and
+`$79.12/hour` in Northern California. User-data deadlines were reduced by
+region so a successful first launch plus ancillary work could not exceed the
+founder's `$60` first-attempt cap. No launch succeeded, so GPU, EBS, and
+instance runtime cost remained `$0`.
+
+Private caches are retained in Ohio and Northern California at 155 objects and
+204,011,284,867 bytes each, matching the central source exactly. They are
+encrypted, versioned, block all public access, and have no GPU attachment. The
+immutable worker was also replicated to Northern California at digest
+`sha256:24ad1ae4b0ae26722d710efdb6c1602268c45d40230a7b5a2c96c952311829b0`.
+Estimated metered ancillary cost is `$8.54`: `$8.16` cross-region cache
+transfer, about `$0.22` worker-image transfer, and at most `$0.16` for
+short-lived NAT/public IPv4, requests, and initial storage. Cost Explorer is
+still marked estimated and account-wide, so it cannot yet isolate this run.
+
+All temporary NAT gateways, elastic IPs, route tables, VPC endpoints, and
+subnets were removed. All four enabled US regions report zero tagged
+instances, volumes, and active reservations. The full-stack deployment is
+zero replicas, its signal and processing queues are empty, KEDA is inactive,
+and there are zero full-stack NodeClaims or nodes.
+
 ## Commercial dependency remediation
 
 ZIM was used only in WorldNav to turn Grounding DINO sky boxes into binary

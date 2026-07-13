@@ -84,6 +84,7 @@
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
+        "arn:aws:ec2:us-east-1:970547373533:instance/*",
         "arn:aws:ec2:us-east-2:970547373533:instance/*",
         "arn:aws:ec2:us-west-2:970547373533:instance/*"
       ],
@@ -100,6 +101,7 @@
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
+        "arn:aws:ec2:us-east-1:970547373533:volume/*",
         "arn:aws:ec2:us-east-2:970547373533:volume/*",
         "arn:aws:ec2:us-west-2:970547373533:volume/*"
       ],
@@ -124,13 +126,38 @@
       }
     },
     {
+      "Sid": "LaunchApprovedHourlyH100",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:970547373533:instance/*",
+        "arn:aws:ec2:us-east-2:970547373533:instance/*",
+        "arn:aws:ec2:us-west-2:970547373533:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:InstanceType": [
+            "p5.48xlarge",
+            "p5en.48xlarge"
+          ],
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack",
+          "aws:RequestTag/Workload": "worldgen-fullstack"
+        }
+      }
+    },
+    {
       "Sid": "UseApprovedPortableRunnerResources",
       "Effect": "Allow",
       "Action": "ec2:RunInstances",
       "Resource": [
+        "arn:aws:ec2:us-east-1::image/ami-*",
         "arn:aws:ec2:us-east-2::image/ami-*",
         "arn:aws:ec2:us-west-2::image/ami-*",
+        "arn:aws:ec2:us-east-1:970547373533:network-interface/*",
         "arn:aws:ec2:us-east-2:970547373533:network-interface/*",
+        "arn:aws:ec2:us-east-1:970547373533:subnet/subnet-0b14ca062f830dcb0",
+        "arn:aws:ec2:us-east-1:970547373533:subnet/subnet-02e3df3c7f1bfa51d",
+        "arn:aws:ec2:us-east-1:970547373533:subnet/subnet-0a90023ab53737fc9",
         "arn:aws:ec2:us-west-2:970547373533:network-interface/*",
         "arn:aws:ec2:us-east-2:970547373533:subnet/subnet-0c8045e9760b656ba",
         "arn:aws:ec2:us-east-2:970547373533:subnet/subnet-03aa005a78a1faf69",
@@ -139,6 +166,7 @@
         "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-0c3444214ad2f1a4f",
         "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-0b1a3ee0d06ba23d2",
         "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-068a843b217236709",
+        "arn:aws:ec2:us-east-1:970547373533:security-group/sg-03a2be55458ffaac3",
         "arn:aws:ec2:us-east-2:970547373533:security-group/sg-09d2e72e31d0599d3",
         "arn:aws:ec2:us-west-2:970547373533:security-group/sg-0bdee45a010888b35"
       ]
@@ -148,6 +176,8 @@
       "Effect": "Allow",
       "Action": "ec2:CreateTags",
       "Resource": [
+        "arn:aws:ec2:us-east-1:970547373533:instance/*",
+        "arn:aws:ec2:us-east-1:970547373533:volume/*",
         "arn:aws:ec2:us-east-2:970547373533:instance/*",
         "arn:aws:ec2:us-east-2:970547373533:volume/*",
         "arn:aws:ec2:us-west-2:970547373533:instance/*",
