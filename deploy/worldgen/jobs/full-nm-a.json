@@ -1,0 +1,16 @@
+{
+  "jobId": "full-nm-a",
+  "prompt": "Night market alley, food stalls, ICE-blue hanging lantern, neon shop signs, and wet stone paving define a dense cyberpunk Asian market at blue hour. Eye-level central arrival, continuous covered canopy and floor, coherent close-range architecture, vendor silhouettes behind counters, controlled teal magenta orange practical lighting, readable materials. No haze, bloom, clipped whites, floating debris, text artifacts, or foreground obstruction. Photorealistic.",
+  "seed": 4201,
+  "style": "",
+  "sceneType": "indoor",
+  "outputS3Prefix": "worldgen-full-staging/full-nm-a",
+  "budgetUsd": 25.0,
+  "landmarks": [
+    {"id": "nm-alley", "name": "Night market alley", "promptPhrase": "night market alley", "checkpointId": "cp-2"},
+    {"id": "nm-stalls", "name": "Food stalls", "promptPhrase": "food stalls", "checkpointId": "cp-3"},
+    {"id": "nm-ice-lantern", "name": "ICE-blue hanging lantern", "promptPhrase": "ICE-blue hanging lantern", "checkpointId": "cp-1"},
+    {"id": "nm-neon", "name": "Neon shop signs", "promptPhrase": "neon shop signs", "checkpointId": "cp-4"},
+    {"id": "nm-paving", "name": "Wet stone paving", "promptPhrase": "wet stone paving", "checkpointId": "cp-5"}
+  ]
+}
