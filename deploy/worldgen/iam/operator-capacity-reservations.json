@@ -1,0 +1,55 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateTaggedWorldgenReservation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateCapacityReservation",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Region": "us-east-1",
+          "ec2:InstanceType": "p5.4xlarge",
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy",
+            "Workload"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "CancelTaggedWorldgenReservation",
+      "Effect": "Allow",
+      "Action": "ec2:CancelCapacityReservation",
+      "Resource": "arn:aws:ec2:us-east-1:970547373533:capacity-reservation/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/ManagedBy": "hy-world-fullstack"
+        }
+      }
+    },
+    {
+      "Sid": "InspectCapacity",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeCapacityBlockOfferings",
+        "ec2:DescribeCapacityReservations",
+        "ec2:DescribeInstanceTypeOfferings",
+        "ec2:DescribeInstanceTypes",
+        "ec2:GetCapacityReservationUsage",
+        "servicequotas:GetServiceQuota",
+        "servicequotas:ListServiceQuotas"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    }
+  ]
+}
