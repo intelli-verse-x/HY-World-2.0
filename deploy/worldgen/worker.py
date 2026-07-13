@@ -465,7 +465,9 @@ def validate_landmark_visibility(scene_dir: Path, landmarks: list[dict]) -> dict
         "Inspect this contact sheet of geometry-only world-generation views. "
         "For each requested landmark, mark visible=true only when its physical scene geometry "
         "is clearly recognizable without HUD text or overlays. Return strict JSON only as "
-        '{"landmarks":[{"id":"...","visible":true,"frameIds":["frame-00"]}]} '
+        '{"landmarks":[{"id":"...","visible":true,"frameIds":["frame-00"],'
+        '"bboxNormalized":[0.1,0.2,0.4,0.8]}]} '
+        "bboxNormalized is [xMin,yMin,xMax,yMax] for the clearest listed frame. "
         f"Requested landmarks: {json.dumps(requested)}"
     )
     response = httpx.post(
@@ -494,10 +496,18 @@ def validate_landmark_visibility(scene_dir: Path, landmarks: list[dict]) -> dict
     for landmark in landmarks:
         seen = by_id.get(landmark["id"], {})
         frame_ids = seen.get("frameIds") or []
+        bbox = seen.get("bboxNormalized") or []
+        valid_bbox = (
+            len(bbox) == 4
+            and all(isinstance(value, (int, float)) and 0 <= value <= 1 for value in bbox)
+            and bbox[0] < bbox[2]
+            and bbox[1] < bbox[3]
+        )
         mapping.append({
             **landmark,
             "trajectoryVisibility": frame_ids,
-            "visibleWithoutOverlay": bool(seen.get("visible") and frame_ids),
+            "visibilityBoundingBox": bbox if valid_bbox else None,
+            "visibleWithoutOverlay": bool(seen.get("visible") and frame_ids and valid_bbox),
             "reconstructedRegion": None,
         })
     artifact = {
@@ -515,21 +525,75 @@ def validate_landmark_visibility(scene_dir: Path, landmarks: list[dict]) -> dict
 
 
 def finalize_landmark_mapping(scene_dir: Path, result_dir: Path) -> dict:
-    """Bind visible landmark evidence to the trained 3D artifact and story IDs."""
+    """Project VLM landmark boxes into the trained splat and persist 3D regions."""
+    import numpy as np
+    from plyfile import PlyData
+
     path = scene_dir / "landmark-map.json"
     mapping = json.loads(path.read_text())
-    gs_files = [
-        str(item.relative_to(result_dir))
-        for item in sorted(result_dir.rglob("*"))
-        if item.is_file() and item.suffix.lower() in (".ply", ".spz", ".obj", ".glb")
-    ]
-    if not gs_files:
-        raise RuntimeError("landmark mapping contract failed: no trained geometry artifact")
+    ply_files = sorted(
+        result_dir.rglob("point_cloud_*.ply"), key=lambda item: item.stat().st_mtime
+    )
+    if not ply_files:
+        raise RuntimeError("landmark mapping contract failed: no trained PLY artifact")
+    ply_path = ply_files[-1]
+    vertices = PlyData.read(str(ply_path))["vertex"].data
+    xyz = np.stack([vertices["x"], vertices["y"], vertices["z"]], axis=1).astype(np.float64)
+    finite_xyz = np.isfinite(xyz).all(axis=1)
+    frame_index = {
+        label.split(":", 1)[0]: scene_dir / label.split(":", 1)[1]
+        for label in mapping["frameIndex"]
+    }
+
     for landmark in mapping["landmarks"]:
+        frame_id = landmark["trajectoryVisibility"][0]
+        frame_path = frame_index.get(frame_id)
+        if frame_path is None:
+            raise RuntimeError(f"landmark mapping contract failed: unknown frame {frame_id}")
+        camera_files = sorted(frame_path.parent.glob("traj*/camera.json"))
+        if not camera_files:
+            raise RuntimeError(f"landmark mapping contract failed: no camera for {frame_id}")
+        camera_path = camera_files[0]
+        camera = json.loads(camera_path.read_text())
+        intrinsic = np.asarray(camera["intrinsic"][0], dtype=np.float64)
+        extrinsic = np.asarray(camera["extrinsic"][0], dtype=np.float64)
+        homogeneous = np.concatenate([xyz, np.ones((len(xyz), 1))], axis=1)
+        camera_xyz = (extrinsic @ homogeneous.T).T[:, :3]
+        depth = camera_xyz[:, 2]
+        projected = (intrinsic @ camera_xyz.T).T
+        pixels = projected[:, :2] / np.maximum(projected[:, 2:3], 1e-9)
+        width = float(camera["width"])
+        height = float(camera["height"])
+        x0, y0, x1, y1 = landmark["visibilityBoundingBox"]
+        selected = (
+            finite_xyz
+            & np.isfinite(pixels).all(axis=1)
+            & (depth > 0)
+            & (pixels[:, 0] >= x0 * width)
+            & (pixels[:, 0] <= x1 * width)
+            & (pixels[:, 1] >= y0 * height)
+            & (pixels[:, 1] <= y1 * height)
+        )
+        indices = np.flatnonzero(selected)
+        if len(indices) < 32:
+            raise RuntimeError(
+                f"landmark mapping contract failed: {landmark['id']} has only "
+                f"{len(indices)} trained gaussians in its evidence box"
+            )
+        # Restrict the region to the front half of projected splats to reduce
+        # background leakage while retaining a robust semantic surface.
+        depth_limit = np.quantile(depth[indices], 0.5)
+        indices = indices[depth[indices] <= depth_limit]
+        region_xyz = xyz[indices]
         landmark["reconstructedRegion"] = {
-            "geometryArtifacts": gs_files,
-            "visibilityEvidenceFrames": landmark["trajectoryVisibility"],
-            "anchorPolicy": "geometry landmark; derive checkpoint anchor from trained depth/camera evidence",
+            "geometryArtifact": str(ply_path.relative_to(result_dir)),
+            "sourceFrame": str(frame_path.relative_to(scene_dir)),
+            "camera": str(camera_path.relative_to(scene_dir)),
+            "gaussianCount": int(len(indices)),
+            "anchorWorld": np.median(region_xyz, axis=0).round(6).tolist(),
+            "boundsMinWorld": np.quantile(region_xyz, 0.05, axis=0).round(6).tolist(),
+            "boundsMaxWorld": np.quantile(region_xyz, 0.95, axis=0).round(6).tolist(),
+            "projectionMethod": "VLM normalized box -> camera projection -> front depth half",
         }
     mapping["trainedGeometryPresent"] = True
     path.write_text(json.dumps(mapping, indent=2))
@@ -541,7 +605,9 @@ def export_viewer_splat(result_dir: Path) -> Path:
     import numpy as np
     from plyfile import PlyData
 
-    candidates = sorted(result_dir.rglob("*.ply"), key=lambda path: path.stat().st_mtime)
+    candidates = sorted(
+        result_dir.rglob("point_cloud_*.ply"), key=lambda path: path.stat().st_mtime
+    )
     if not candidates:
         raise RuntimeError("viewer export failed: no trained PLY found")
     ply_path = candidates[-1]
