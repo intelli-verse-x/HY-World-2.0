@@ -102,6 +102,15 @@ _PARAM_DEFAULTS = {
     # with plausible local color instead.
     "dark_cull_lum": 0.0,     # 0-255 luminance threshold (0 = off)
     "dark_cull_opac": 0.5,    # only cull if opacity also below this
+    # Reuse an existing panorama (URL) instead of generating — enables fast
+    # surgical re-reconstruction iterations on a known-good pano (~6 min).
+    "pano_src": "",
+    # Soft-knee highlight compression on the pano before recon: blown white
+    # streaks/glare in the pano become giant white splat shafts in the recon.
+    "pano_tonemap": 0,        # 1 = compress lum above ~215
+    # Crossfade the equirect wrap seam (blown-splat clusters concentrate at
+    # az +-180 without it).
+    "pano_seam_blend": 32,    # px, 0 = off
 }
 
 
@@ -298,6 +307,32 @@ class _RRDB(object):
                 return self.conv_last(self.lrelu(self.conv_hr(feat)))
 
         return RRDBNet()
+
+
+def condition_panorama(pano_path: Path, tonemap: bool = True, seam_px: int = 32):
+    """Pre-recon conditioning: soft-knee compress blown highlights (they turn
+    into giant white splat shafts) and crossfade the equirect wrap seam."""
+    import cv2
+
+    img = cv2.imread(str(pano_path), cv2.IMREAD_COLOR).astype(np.float32)
+    if tonemap:
+        lum = img @ np.array([0.114, 0.587, 0.299], dtype=np.float32)
+        knee, ceil = 215.0, 245.0
+        over = lum > knee
+        # compress: knee + (lum-knee) * 0.35, capped at ceil
+        target = np.minimum(knee + (lum - knee) * 0.35, ceil)
+        scale = np.ones_like(lum)
+        scale[over] = target[over] / np.maximum(lum[over], 1.0)
+        img *= scale[..., None]
+    if seam_px > 0:
+        w = img.shape[1]
+        for i in range(seam_px):
+            a = 0.5 + 0.5 * (i / seam_px)   # weight toward own column
+            l, r = img[:, i].copy(), img[:, w - 1 - i].copy()
+            img[:, i] = a * l + (1 - a) * r
+            img[:, w - 1 - i] = a * r + (1 - a) * l
+    cv2.imwrite(str(pano_path), np.clip(img, 0, 255).astype(np.uint8))
+    log(f"pano conditioned (tonemap={tonemap}, seam={seam_px}px)")
 
 
 def upscale_panorama(pano_path: Path, factor: int, out_path: Path):
@@ -668,9 +703,20 @@ def process_job(job: dict):
     splat_path = jdir / "world.splat"
     hd_path = jdir / "world-hd.splat"
 
-    gen_seed_image(prompt, seed_path)
-    gen_panorama(prompt, seed_path, pano_path,
-                 steps=cfg["pano_steps"], true_cfg=cfg["pano_true_cfg"])
+    if cfg["pano_src"]:
+        # Surgical re-recon: reuse a known-good panorama, skip generation.
+        import urllib.request
+        urllib.request.urlretrieve(cfg["pano_src"], pano_path)
+        seed_path.write_bytes(b"")  # placeholder; seed not regenerated
+        log(f"pano reused from {cfg['pano_src']}")
+    else:
+        gen_seed_image(prompt, seed_path)
+        gen_panorama(prompt, seed_path, pano_path,
+                     steps=cfg["pano_steps"], true_cfg=cfg["pano_true_cfg"])
+    if cfg["pano_tonemap"] or cfg["pano_seam_blend"]:
+        condition_panorama(pano_path,
+                           tonemap=bool(cfg["pano_tonemap"]),
+                           seam_px=int(cfg["pano_seam_blend"]))
     recon_input = pano_path
     if cfg["pano_upscale"] > 1:
         recon_input = jdir / "panorama-up.png"
@@ -741,8 +787,9 @@ def process_job(job: dict):
         "world.splat": splat_path,
         "panorama.png": pano_path,
         "preview.png": preview,
-        "seed.png": seed_path,
     }
+    if seed_path.stat().st_size > 0:
+        uploads["seed.png"] = seed_path
     if hd:
         uploads["world-hd.splat"] = hd_path
 
