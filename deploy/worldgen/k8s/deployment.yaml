@@ -53,7 +53,11 @@ spec:
           aws configure set default.s3.max_concurrent_requests 32
           if aws s3 ls "$SRC/" >/dev/null 2>&1; then
             echo "Syncing $SRC -> $DST"
-            time aws s3 sync "$SRC" "$DST" --only-show-errors && echo "S3 model sync OK" \
+            # Snapshot objects were dereferenced to regular files during the
+            # mirror. Skip duplicate HF blob objects and lock metadata.
+            time aws s3 sync "$SRC" "$DST" --only-show-errors \
+              --exclude 'hub/*/blobs/*' --exclude 'hub/.locks/*' \
+              && echo "S3 model sync OK" \
               || echo "WARN: s3 sync failed; workers will fall back to HF download via NAT"
           else
             echo "WARN: $SRC not mirrored yet; workers will fall back to HF download via NAT"
