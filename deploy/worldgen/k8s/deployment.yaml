@@ -70,7 +70,7 @@ spec:
           name: model-cache
       containers:
       - name: worker
-        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:663e3cecc819f2fddcae3f13abd198158abb9894c66bd3f33ee446c9f9be1c8b
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:2489a1f75751e487e7d58baefee409b939fd06b577f5621e36f9328ea2f0ac71
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_PASSWORD
@@ -117,13 +117,13 @@ spec:
         - name: NGPU
           value: "8"
         - name: SOURCE_COMMIT
-          value: 9b89e84
+          value: 7a2cb64
         - name: IMAGE_URI
-          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:663e3cecc819f2fddcae3f13abd198158abb9894c66bd3f33ee446c9f9be1c8b
+          value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:2489a1f75751e487e7d58baefee409b939fd06b577f5621e36f9328ea2f0ac71
         - name: INSTANCE_TYPE
           value: g5.48xlarge
         - name: INSTANCE_HOURLY_USD
-          value: "4.60"
+          value: "16.288"
         - name: MAX_JOB_SECONDS
           value: "16200"
         - name: NVIDIA_VISIBLE_DEVICES

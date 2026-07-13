@@ -67,7 +67,9 @@ spec:
       requirements:
       - key: karpenter.sh/capacity-type
         operator: In
-        values: [spot]
+        # Temporary bounded fallback: account Spot quota is 64 vCPU, below
+        # g5.48xlarge's 192 vCPU. Revert to spot after candidate A.
+        values: [on-demand]
       - key: kubernetes.io/arch
         operator: In
         values: [amd64]

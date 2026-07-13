@@ -57,6 +57,11 @@ Karpenter events and explicitly add `on-demand` to the NodePool only after
 recalculating `INSTANCE_HOURLY_USD`, the job budget, and the round cap. Revert
 the capacity type immediately after the candidate.
 
+For the first Night Market A launch, the account's G/VT Spot quota was only
+64 vCPUs versus 192 required by `g5.48xlarge`. The bounded fallback therefore
+uses the available on-demand quota at $16.288/hour: 4.5 hours hard-caps A at
+$73.30. Candidate B stays held until A's actual cost and health are known.
+
 ## Durable stage schema and resume
 
 Every successful stage writes:
