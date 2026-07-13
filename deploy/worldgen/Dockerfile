@@ -47,7 +47,10 @@ RUN pip install --no-cache-dir redis boto3 httpx "huggingface_hub[hf_transfer]"
 COPY . /app
 
 # gsplat_maskgaussian (custom gsplat with MaskGaussian) — CUDA build
-RUN cd /app/hyworld2/worldgen/third_party/gsplat_maskgaussian \
+RUN mkdir -p /app/hyworld2/worldgen/third_party/gsplat_maskgaussian/gsplat/cuda/csrc/third_party \
+    && git clone --depth 1 https://github.com/g-truc/glm.git \
+       /app/hyworld2/worldgen/third_party/gsplat_maskgaussian/gsplat/cuda/csrc/third_party/glm \
+    && cd /app/hyworld2/worldgen/third_party/gsplat_maskgaussian \
     && pip install --no-cache-dir --no-build-isolation -e .
 
 # recastnavigation (git submodule; fetched here in case the build context
