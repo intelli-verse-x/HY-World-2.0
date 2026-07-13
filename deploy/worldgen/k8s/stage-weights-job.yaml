@@ -10,7 +10,7 @@
 #   hanshanxue/WorldStereo worldstereo-memory-dmd (35G)
 #   tencent/HY-World-2.0 HY-WorldMirror-2.0 (5G)
 #   DiffusionWave/sam3 (3.5G, ungated mirror of gated facebook/sam3)
-#   Ruicheng/moge-2-vitl-normal, naver-iv/zim-anything-vitl,
+#   Ruicheng/moge-2-vitl-normal, facebook/sam-vit-base,
 #   IDEA-Research/grounding-dino-tiny, facebook/dinov2-base (~4G)
 apiVersion: batch/v1
 kind: Job
@@ -50,7 +50,7 @@ spec:
               ("DiffusionWave/sam3",
                ["*.json", "*.txt", "model.safetensors", "tokenizer*", "vocab*", "merges*"]),
               ("Ruicheng/moge-2-vitl-normal", None),
-              ("naver-iv/zim-anything-vitl", ["zim_vit_l_2092/*"]),
+              ("facebook/sam-vit-base", ["*.json", "*.txt", "model.safetensors"]),
               ("IDEA-Research/grounding-dino-tiny", None),
               ("facebook/dinov2-base", None),
           ]

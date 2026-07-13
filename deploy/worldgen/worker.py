@@ -107,7 +107,7 @@ STAGE_MODELS = {
     "panorama": ["Qwen/Qwen-Image-Edit-2509", "tencent/HY-World-2.0/HY-Pano-2.0"],
     "traj_generate": [
         "gemini/gemini-2.5-flash", "DiffusionWave/sam3",
-        "Ruicheng/moge-2-vitl-normal", "naver-iv/zim-anything-vitl",
+        "Ruicheng/moge-2-vitl-normal", "facebook/sam-vit-base",
     ],
     "traj_render": ["gemini/gemini-2.5-flash", "Ruicheng/moge-2-vitl-normal"],
     "video_gen": [
@@ -127,7 +127,7 @@ MODEL_REVISIONS = {
     "hanshanxue/WorldStereo": "ac2ad97ecb043fe80c2f19cd1898006becb9d66e",
     "DiffusionWave/sam3": "480147c4f3cf808f763e6d44f762e71616ea1cec",
     "Ruicheng/moge-2-vitl-normal": "b135031bae30b5ac2ae141a0e68717795ce38340",
-    "naver-iv/zim-anything-vitl": "667e2d7c233f6f1cacd12ccc64bdf6cc7b5aa16d",
+    "facebook/sam-vit-base": "70c1a07f894ebb5b307fd9eaaee97b9dfc16068f",
     "IDEA-Research/grounding-dino-tiny": "a2bb814dd30d776dcf7e30523b00659f4f141c71",
     "facebook/dinov2-base": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",
 }

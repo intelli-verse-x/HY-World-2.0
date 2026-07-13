@@ -55,7 +55,7 @@ from src.panorama_utils import (
     erp_distance_ray_to_normal
 )
 from src.pointcloud import point_rendering
-from src.seg_utils import get_zim_mask, build_gd_model, build_zim_model
+from src.seg_utils import build_box_segmenter, build_gd_model, get_segment_mask
 from src.vlm_utils import get_qwen_caption_format
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -74,8 +74,7 @@ LLM_PORT = 8000
 SAM_BATCH_SIZE = 4
 MAX_MASK_COUNT = 5
 HF_CACHE_DIR = os.path.expanduser("~/.cache/huggingface/hub")
-ZIM_REPO_ID = "naver-iv/zim-anything-vitl"
-ZIM_SUBFOLDER = "zim_vit_l_2092"
+SAM_BOX_REPO_ID = os.environ.get("SAM_BOX_REPO_ID", "facebook/sam-vit-base")
 GD_REPO_ID = "IDEA-Research/grounding-dino-tiny"
 # facebook/sam3 is gated on HF; allow pointing at an ungated mirror via env.
 SAM3_REPO_ID = os.environ.get("SAM3_REPO_ID", "facebook/sam3")
@@ -99,12 +98,11 @@ def resolve_hf_checkpoint(repo_id, allow_patterns=None, subfolder=None, required
     return checkpoint_dir
 
 
-def resolve_zim_checkpoint():
+def resolve_sam_box_checkpoint():
     return resolve_hf_checkpoint(
-        ZIM_REPO_ID,
-        allow_patterns=[f"{ZIM_SUBFOLDER}/*"],
-        subfolder=ZIM_SUBFOLDER,
-        required_files=["encoder.onnx", "decoder.onnx"],
+        SAM_BOX_REPO_ID,
+        allow_patterns=["*.json", "*.txt", "*.safetensors"],
+        required_files=["config.json", "preprocessor_config.json", "model.safetensors"],
     )
 
 
@@ -198,7 +196,7 @@ if __name__ == '__main__':
     set_seed(args.seed)
 
     print("Models Initializing...")
-    zim_predictor = build_zim_model("vit_l", resolve_zim_checkpoint(), device=device)
+    mask_predictor = build_box_segmenter(resolve_sam_box_checkpoint(), device=device)
     gd_processor, gd_model = build_gd_model(resolve_gd_checkpoint(), device=device)
 
     depth_model = MoGeModel.from_pretrained(MOGE_ID).to(device).eval()
@@ -287,7 +285,7 @@ if __name__ == '__main__':
         else:
             with timer.track("Get sky mask"):
                 if meta_info["scene_type"] == "outdoor":
-                    sky_mask = torch.tensor(~get_zim_mask(full_img, "sky.", 0.3, 0.3, zim_predictor, gd_processor, gd_model, DEVICE=device))
+                    sky_mask = torch.tensor(~get_segment_mask(full_img, "sky.", 0.3, 0.3, mask_predictor, gd_processor, gd_model, DEVICE=device))
                     # FIXME: Treat sky-dominant scenes as all non-sky for now.
                     if sky_mask.float().mean() > 0.9:
                         rank0_log(f"Sky mask is too high for {scene_path} ({sky_mask.float().mean()}), set to all non-sky")

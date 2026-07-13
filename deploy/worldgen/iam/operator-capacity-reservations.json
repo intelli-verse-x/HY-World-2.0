@@ -8,8 +8,18 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "ec2:Region": "us-east-1",
-          "ec2:InstanceType": "p5.4xlarge",
+          "ec2:Region": [
+            "us-east-1",
+            "us-east-2",
+            "us-west-1",
+            "us-west-2"
+          ],
+          "ec2:InstanceType": [
+            "p4de.24xlarge",
+            "p5.4xlarge",
+            "p5.48xlarge",
+            "p5en.48xlarge"
+          ],
           "aws:RequestTag/ManagedBy": "hy-world-fullstack"
         },
         "ForAllValues:StringEquals": {
@@ -24,7 +34,12 @@
       "Sid": "CancelTaggedWorldgenReservation",
       "Effect": "Allow",
       "Action": "ec2:CancelCapacityReservation",
-      "Resource": "arn:aws:ec2:us-east-1:970547373533:capacity-reservation/*",
+      "Resource": [
+        "arn:aws:ec2:us-east-1:970547373533:capacity-reservation/*",
+        "arn:aws:ec2:us-east-2:970547373533:capacity-reservation/*",
+        "arn:aws:ec2:us-west-1:970547373533:capacity-reservation/*",
+        "arn:aws:ec2:us-west-2:970547373533:capacity-reservation/*"
+      ],
       "Condition": {
         "StringEquals": {
           "ec2:ResourceTag/ManagedBy": "hy-world-fullstack"
@@ -38,6 +53,8 @@
         "ec2:DescribeAvailabilityZones",
         "ec2:DescribeCapacityBlockOfferings",
         "ec2:DescribeCapacityReservations",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
         "ec2:DescribeInstanceTypeOfferings",
         "ec2:DescribeInstanceTypes",
         "ec2:GetCapacityReservationUsage",
@@ -47,9 +64,109 @@
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
+          "aws:RequestedRegion": [
+            "us-east-1",
+            "us-east-2",
+            "us-west-1",
+            "us-west-2"
+          ]
         }
       }
+    },
+    {
+      "Sid": "InspectPublicPricing",
+      "Effect": "Allow",
+      "Action": "pricing:GetProducts",
+      "Resource": "*"
+    },
+    {
+      "Sid": "LaunchTaggedSingleH100",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:970547373533:instance/*",
+        "arn:aws:ec2:us-west-2:970547373533:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:InstanceType": "p5.4xlarge",
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack",
+          "aws:RequestTag/Workload": "worldgen-fullstack"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedPortableVolumes",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:970547373533:volume/*",
+        "arn:aws:ec2:us-west-2:970547373533:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack",
+          "aws:RequestTag/Workload": "worldgen-fullstack"
+        }
+      }
+    },
+    {
+      "Sid": "UseApprovedPortableRunnerResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:us-east-2::image/ami-*",
+        "arn:aws:ec2:us-west-2::image/ami-*",
+        "arn:aws:ec2:us-east-2:970547373533:network-interface/*",
+        "arn:aws:ec2:us-west-2:970547373533:network-interface/*",
+        "arn:aws:ec2:us-east-2:970547373533:subnet/subnet-0c8045e9760b656ba",
+        "arn:aws:ec2:us-east-2:970547373533:subnet/subnet-03aa005a78a1faf69",
+        "arn:aws:ec2:us-east-2:970547373533:subnet/subnet-071459fa16f6c6fa6",
+        "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-0eeb1055811a9c1a5",
+        "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-0c3444214ad2f1a4f",
+        "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-0b1a3ee0d06ba23d2",
+        "arn:aws:ec2:us-west-2:970547373533:subnet/subnet-068a843b217236709",
+        "arn:aws:ec2:us-east-2:970547373533:security-group/sg-09d2e72e31d0599d3",
+        "arn:aws:ec2:us-west-2:970547373533:security-group/sg-0bdee45a010888b35"
+      ]
+    },
+    {
+      "Sid": "TagPortableRunnerAtLaunch",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:us-east-2:970547373533:instance/*",
+        "arn:aws:ec2:us-east-2:970547373533:volume/*",
+        "arn:aws:ec2:us-west-2:970547373533:instance/*",
+        "arn:aws:ec2:us-west-2:970547373533:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances",
+          "aws:RequestTag/ManagedBy": "hy-world-fullstack",
+          "aws:RequestTag/Workload": "worldgen-fullstack"
+        }
+      }
+    },
+    {
+      "Sid": "StopTaggedPortableRunner",
+      "Effect": "Allow",
+      "Action": "ec2:TerminateInstances",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:ResourceTag/ManagedBy": "hy-world-fullstack"
+        }
+      }
+    },
+    {
+      "Sid": "ConfigureWorkerImageReplication",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:DescribeRegistry",
+        "ecr:PutReplicationConfiguration"
+      ],
+      "Resource": "*"
     }
   ]
 }
