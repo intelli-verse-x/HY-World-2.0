@@ -34,8 +34,8 @@ terminate_self() {
 }
 trap terminate_self EXIT
 
-# The hard deadline is independent of worker health and bounds p4de compute below
-# one hour. Normal completion still waits the required 15-minute idle period.
+# The hard deadline is independent of worker health and bounds hourly compute.
+# Normal completion may still wait the configured idle period.
 (sleep "$HARD_DEADLINE_SECONDS"; terminate_self) &
 
 dnf install -y docker awscli jq socat
