@@ -51,6 +51,7 @@ spec:
           set -eu
           rm -rf /workspace/ctx && mkdir -p /workspace/ctx
           aws s3 cp s3://intelli-verse-x-media/models/hy-world/build/context.tar.gz /tmp/ctx.tgz
+          yum install -y tar gzip >/dev/null
           tar -xzf /tmp/ctx.tgz -C /workspace/ctx
           chmod -R a+rwX /workspace
           ls /workspace/ctx
