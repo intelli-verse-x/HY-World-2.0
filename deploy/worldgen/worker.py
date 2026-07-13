@@ -1019,6 +1019,29 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             )
             return manifest
 
+        def pause_requested(stage: str) -> bool:
+            if job.get("pauseAfterStage") != stage:
+                return False
+            paused = {
+                "jobId": job_id,
+                "state": "paused",
+                "stage": stage,
+                "s3CheckpointPrefix": (
+                    f"s3://{Config.S3_BUCKET}/{checkpoint_prefix(job_id)}/"
+                ),
+            }
+            set_status(
+                stage,
+                state="paused",
+                s3CheckpointPrefix=paused["s3CheckpointPrefix"],
+            )
+            r.rpush(Config.DONE_QUEUE, json.dumps(paused))
+            post_discord(
+                f"HY-World full-stack `{job_id}` paused after `{stage}`; "
+                "resume will restore its private S3 checkpoint."
+            )
+            return True
+
         logger.info("checkpoint restore files=%d", restored)
 
         # Stage 0a: seed image
@@ -1032,6 +1055,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             else:
                 generate_seed_image(full_prompt, seed_path)
             checkpoint("seed_image", stage_start)
+        if pause_requested("seed_image"):
+            return
 
         # Stage 0b: panorama
         set_status("panorama")
@@ -1040,6 +1065,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             stage_start = time.time()
             generate_panorama(seed_path, full_prompt, pano_path, seed=int(job.get("seed", 42)))
             checkpoint("panorama", stage_start)
+        if pause_requested("panorama"):
+            return
 
         vlm_args = [
             "--llm_addr", Config.LLM_ADDR,
@@ -1058,6 +1085,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--force_vlm", "--skip_exist",
             ], cwd=wg, log_path=scene_dir / "logs/traj_generate.log")
             checkpoint("traj_generate", stage_start)
+        if pause_requested("traj_generate"):
+            return
 
         # Stage 2: trajectory rendering (multi-GPU)
         set_status("traj_render")
@@ -1068,6 +1097,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--target_path", str(scene_dir), *vlm_args, "--skip_exist",
             ), cwd=wg, log_path=scene_dir / "logs/traj_render.log")
             checkpoint("traj_render", stage_start)
+        if pause_requested("traj_render"):
+            return
 
         # Stage 3: world expansion (multi-GPU + FSDP)
         set_status("video_gen")
@@ -1082,6 +1113,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "allFiveLandmarksVisible": landmark_validation["allFiveVisible"],
                 "landmarkMap": "scene/landmark-map.json",
             })
+        if pause_requested("video_gen"):
+            return
 
         # Stage 4: 3DGS training data
         set_status("gen_gs_data")
@@ -1092,6 +1125,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--root_path", str(scene_dir), "--save_normal", "--split_sky",
             ), cwd=wg, log_path=scene_dir / "logs/gen_gs_data.log")
             checkpoint("gen_gs_data", stage_start)
+        if pause_requested("gen_gs_data"):
+            return
 
         # Stage 5: 3DGS training + export (upstream flags, steps scaled for ngpu)
         set_status("gs_train")
@@ -1119,6 +1154,8 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 ),
                 "landmarkMap": "scene/landmark-map.json",
             })
+        if pause_requested("gs_train"):
+            return
 
         # Post-training viewer export; this converts learned 3DGS, not a pano shell.
         set_status("viewer_export")

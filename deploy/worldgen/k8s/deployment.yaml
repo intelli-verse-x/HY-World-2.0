@@ -32,7 +32,7 @@ spec:
             - matchExpressions:
               - key: node.kubernetes.io/instance-type
                 operator: In
-                values: [g6e.24xlarge]
+                values: [g6e.xlarge]
       tolerations:
       - effect: NoSchedule
         key: nvidia.com/gpu
@@ -115,15 +115,15 @@ spec:
         - name: HF_HOME
           value: /models/hf-cache
         - name: NGPU
-          value: "4"
+          value: "1"
         - name: SOURCE_COMMIT
           value: ef5d341
         - name: IMAGE_URI
           value: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-full-worker@sha256:7ec81634b68391f40a47c073264b50e854b33d3709b8d9656bc602889134dc93
         - name: INSTANCE_TYPE
-          value: g6e.24xlarge
+          value: g6e.xlarge
         - name: INSTANCE_HOURLY_USD
-          value: "15.0656"
+          value: "1.861"
         - name: MAX_JOB_SECONDS
           value: "16200"
         - name: NVIDIA_VISIBLE_DEVICES
@@ -132,13 +132,13 @@ spec:
           value: expandable_segments:True
         resources:
           requests:
-            cpu: "32"
-            memory: 300Gi
-            nvidia.com/gpu: "4"
+            cpu: "3"
+            memory: 26Gi
+            nvidia.com/gpu: "1"
           limits:
-            cpu: "80"
-            memory: 700Gi
-            nvidia.com/gpu: "4"
+            cpu: "4"
+            memory: 30Gi
+            nvidia.com/gpu: "1"
         volumeMounts:
         - mountPath: /models/hf-cache
           name: model-cache

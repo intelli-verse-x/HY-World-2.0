@@ -36,13 +36,14 @@ at production v15 for rollback only.
 
 Upstream recommends at least four GPUs and documents testing on eight H20s.
 The initial 8×24GB A10G compatibility probe loaded every Qwen component but
-OOMed at native 1952×960 step zero (44.7MiB free). The corrected bounded
-topology is on-demand `g6e.24xlarge`: four 48GB L40S, a 1Ti gp3 root, and
-four-way FSDP.
+OOMed at native 1952×960 step zero (44.7MiB free). Four-GPU L40S shapes were
+capacity-exhausted. The corrected stage topology uses one 48GB L40S
+`g6e.xlarge` for HY-Pano, pauses after its durable checkpoint, then resumes
+WorldNav/WorldStereo/3DGS on four 24GB ranks.
 
 - Expected runtime: 2.5–4.5 hours per world.
-- On-demand L40S rate: $15.0656/hour.
-- Maximum per candidate: $67.80 at the 4.5-hour hard timeout.
+- HY-Pano L40S rate: $1.861/hour (maximum $8.37 if it consumed the whole cap).
+- Resume topology and remaining-stage cost are recorded in their own manifests.
 - Candidate B remains held until A's health and actual cost are known.
 
 Karpenter normally provisions spot only; hero A uses the documented bounded
@@ -58,10 +59,10 @@ the capacity type immediately after the candidate.
 
 For the first Night Market A launch, the account's G/VT Spot quota was only
 64 vCPUs versus 192 required by `g5.48xlarge`. After the A10G memory ceiling
-was measured, `g6e.12xlarge` was attempted but all tested AZs lacked capacity.
-The `g6e.24xlarge` fallback still meets upstream's four-GPU minimum and the
-48GB/rank requirement. Preflight overhead plus A's $67.80 cap remains below
-the $100 round cap.
+was measured, both four-L40S shapes were capacity-exhausted in tested AZs.
+Stage-specific resume avoids that scarce topology: only HY-Pano requires the
+48GB rank. Preflight overhead plus the single-L40S panorama and four-A10G
+resume remain below the $100 round cap.
 
 ## Durable stage schema and resume
 
