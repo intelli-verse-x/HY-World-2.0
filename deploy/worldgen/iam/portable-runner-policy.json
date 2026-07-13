@@ -28,6 +28,7 @@
         "arn:aws:s3:::intelliverse-hyworld-private-us-east-1/models/hy-world/hf/*",
         "arn:aws:s3:::intelliverse-hyworld-private-us-east-1/worldgen-full-checkpoints/*",
         "arn:aws:s3:::intelliverse-hyworld-private-us-east-1/worldgen-full-staging/*",
+        "arn:aws:s3:::intelliverse-hyworld-private-us-east-1/worldgen-full-ops/*",
         "arn:aws:s3:::intelliverse-hyworld-private-us-west-2/models/hy-world/hf/*"
       ]
     },
