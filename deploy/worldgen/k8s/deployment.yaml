@@ -38,8 +38,8 @@ spec:
         key: nvidia.com/gpu
         operator: Exists
       initContainers:
-      # Same pattern as vllm-chat's s3-model-sync: hydrate the HF cache on the
-      # retained model PVC from the S3 mirror (no-op when warm). Uses the S3
+      # Same pattern as vllm-chat's s3-model-sync: hydrate the HF cache from
+      # the private S3 mirror. Uses the S3
       # gateway endpoint, no NAT.
       - name: s3-model-sync
         image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
@@ -148,8 +148,8 @@ spec:
           name: shm
       volumes:
       - name: model-cache
-        persistentVolumeClaim:
-          claimName: scratch-mirror-hy-world
+        emptyDir:
+          sizeLimit: 350Gi
       - name: scenes
         emptyDir:
           sizeLimit: 500Gi
