@@ -15,7 +15,7 @@ spec:
   minReplicaCount: 0
   maxReplicaCount: 1
   pollingInterval: 15
-  cooldownPeriod: 600
+  cooldownPeriod: 900
   triggers:
   - type: redis
     authenticationRef:

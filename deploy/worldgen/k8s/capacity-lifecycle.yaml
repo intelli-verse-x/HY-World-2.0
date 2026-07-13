@@ -1,0 +1,118 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: worldgen-capacity-lifecycle
+  namespace: aicart
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  resourceNames: ["hy-world-full-worker"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: worldgen-capacity-lifecycle
+  namespace: aicart
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: worldgen-capacity-lifecycle
+subjects:
+- kind: ServiceAccount
+  name: ssm-access
+  namespace: aicart
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: worldgen-capacity-lifecycle
+rules:
+- apiGroups: ["karpenter.sh"]
+  resources: ["nodeclaims"]
+  verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: worldgen-capacity-lifecycle
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: worldgen-capacity-lifecycle
+subjects:
+- kind: ServiceAccount
+  name: ssm-access
+  namespace: aicart
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: worldgen-capacity-lifecycle
+  namespace: aicart
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: worldgen-capacity-lifecycle
+        spec:
+          serviceAccountName: ssm-access
+          restartPolicy: Never
+          containers:
+          - name: controller
+            image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-capacity-lifecycle@sha256:8a13a20dad9af05622df639862bde4433b7ac47a137ed4a23d490c45241d3f13
+            imagePullPolicy: IfNotPresent
+            env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: AWS_S3_BUCKET_NAME
+              value: intelliverse-hyworld-private-us-east-1
+            - name: INSTANCE_TYPE
+              value: p5.4xlarge
+            - name: INSTANCE_HOURLY_USD
+              value: "6.88"
+            - name: CAPACITY_ZONES
+              value: us-east-1a,us-east-1b,us-east-1c
+            - name: IDLE_SECONDS
+              value: "900"
+            - name: WORLDGEN_QUEUE
+              value: pipeline:signal:worldgen-full
+            - name: WORLDGEN_PROCESSING_QUEUE
+              value: pipeline:worldgen-full:processing
+            - name: WORKER_DEPLOYMENT
+              value: hy-world-full-worker
+            - name: WORLDGEN_NODEPOOL
+              value: worldgen-fullstack-p5
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keda-redis-auth
+                  key: password
+            - name: DISCORD_WEBHOOK
+              valueFrom:
+                secretKeyRef:
+                  name: admin-portal-discord-webhook
+                  key: DISCORD_PORTAL_WEBHOOK_URL
+            resources:
+              requests:
+                cpu: 50m
+                memory: 96Mi
+              limits:
+                cpu: 300m
+                memory: 256Mi
