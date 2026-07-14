@@ -2,9 +2,18 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "Ec2InstanceAssume",
       "Effect": "Allow",
       "Principal": {
         "Service": "ec2.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    },
+    {
+      "Sid": "S3UserAssumeForWorldgen",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::970547373533:user/s3-user"
       },
       "Action": "sts:AssumeRole"
     }

@@ -37,6 +37,28 @@ def caption_single_video(args):
             json.dump({"prompt": traj_caption}, write, indent=2)
         return render_path, True, None
     except Exception as e:
+        # Never leave a trajectory without a caption: video_gen requires
+        # traj_caption.json for every trajectory. Fall back to the scene prompt so
+        # the pipeline stays unblocked; still report the failure to the caller.
+        try:
+            import ast
+            scene_root = render_path.split('/render_results/')[0]
+            with open(os.path.join(scene_root, 'meta_info.json')) as mf:
+                raw_prompt = json.load(mf).get('prompt', '')
+            if isinstance(raw_prompt, str) and raw_prompt.strip().startswith('{'):
+                try:
+                    raw_prompt = ast.literal_eval(raw_prompt)
+                except Exception:
+                    pass
+            fallback = raw_prompt.get('text', '') if isinstance(raw_prompt, dict) else str(raw_prompt)
+            fallback = fallback.strip() or (
+                "A continuous camera trajectory moving through the scene, revealing its "
+                "architecture, lighting, and surrounding details."
+            )
+            with open(output_path, "w") as write:
+                json.dump({"prompt": fallback, "fallback": True}, write, indent=2)
+        except Exception:
+            pass
         return render_path, False, str(e)
 
 

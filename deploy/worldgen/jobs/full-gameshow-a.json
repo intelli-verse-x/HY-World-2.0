@@ -1,0 +1,16 @@
+{
+  "jobId": "full-gameshow-a",
+  "prompt": "TV game-show stage: a glowing contestant podium, a bright host stage, sweeping colored spotlights, tiered audience seating, and a large glowing scoreboard define an energetic broadcast set. Eye-level central arrival, continuous ceiling rig and studio floor, coherent close-range set architecture, saturated blue magenta stage lighting, readable panels and signage. No haze, bloom, clipped whites, floating debris, text artifacts, or foreground obstruction. Photorealistic.",
+  "seed": 4322,
+  "style": "",
+  "sceneType": "indoor",
+  "outputS3Prefix": "worldgen-full-staging/full-gameshow-a",
+  "budgetUsd": 25.0,
+  "landmarks": [
+    {"id": "gs-podium", "name": "Contestant podium", "promptPhrase": "contestant podium", "checkpointId": "cp-1"},
+    {"id": "gs-stage", "name": "Host stage", "promptPhrase": "bright host stage", "checkpointId": "cp-2"},
+    {"id": "gs-spotlights", "name": "Colored spotlights", "promptPhrase": "sweeping colored spotlights", "checkpointId": "cp-3"},
+    {"id": "gs-audience", "name": "Audience seating", "promptPhrase": "tiered audience seating", "checkpointId": "cp-4"},
+    {"id": "gs-scoreboard", "name": "Scoreboard", "promptPhrase": "large glowing scoreboard", "checkpointId": "cp-5"}
+  ]
+}

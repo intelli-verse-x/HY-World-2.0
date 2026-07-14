@@ -4,14 +4,14 @@
 # requirements.txt; devel is required because gsplat_maskgaussian, fused-ssim
 # and the navmesh extension compile CUDA/C++ from source).
 #
-# CUDA archs: 8.6 = A10G (g5), 8.9 = L4 (g6) — the only GPUs in the cluster.
+# CUDA archs: 8.6 = A10G (g5), 8.9 = L4 (g6), 9.0 = H100 (portable RunPod runner).
 # flash-attn is intentionally NOT installed: models/attention.py falls back to
 # PyTorch SDPA automatically, which works on both architectures.
 
 FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    TORCH_CUDA_ARCH_LIST="8.6;8.9+PTX" \
+    TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0+PTX" \
     MAX_JOBS=4 \
     HF_HOME=/root/.cache/huggingface \
     HF_HUB_ENABLE_HF_TRANSFER=1 \

@@ -188,7 +188,6 @@ def get_traj_caption(LLM_ADDR, LLM_PORT, MODEL_NAME, traj_path, sample_count=8):
         messages=messages,
         max_tokens=1024,  # Adjust max_tokens to keep it concise
         temperature=0.1,
-        seed=1024
     )
     caption = response.choices[0].message.content.replace('\n', '').strip()
 

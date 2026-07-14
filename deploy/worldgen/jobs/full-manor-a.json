@@ -1,0 +1,16 @@
+{
+  "jobId": "full-manor-a",
+  "prompt": "Victorian manor grand hall: a sweeping carved staircase, a crystal chandelier, gilt-framed oil paintings, a marble fireplace, and ornate carved furniture define an opulent estate interior at evening. Eye-level central arrival, continuous coffered ceiling and parquet floor, coherent close-range architecture, warm candlelit chandelier glow, readable wood marble and gilt materials. No haze, bloom, clipped whites, floating debris, text artifacts, or foreground obstruction. Photorealistic.",
+  "seed": 4335,
+  "style": "",
+  "sceneType": "indoor",
+  "outputS3Prefix": "worldgen-full-staging/full-manor-a",
+  "budgetUsd": 25.0,
+  "landmarks": [
+    {"id": "manor-staircase", "name": "Carved staircase", "promptPhrase": "sweeping carved staircase", "checkpointId": "cp-1"},
+    {"id": "manor-chandelier", "name": "Crystal chandelier", "promptPhrase": "crystal chandelier", "checkpointId": "cp-2"},
+    {"id": "manor-paintings", "name": "Oil paintings", "promptPhrase": "gilt-framed oil paintings", "checkpointId": "cp-3"},
+    {"id": "manor-fireplace", "name": "Marble fireplace", "promptPhrase": "marble fireplace", "checkpointId": "cp-4"},
+    {"id": "manor-furniture", "name": "Ornate furniture", "promptPhrase": "ornate carved furniture", "checkpointId": "cp-5"}
+  ]
+}
