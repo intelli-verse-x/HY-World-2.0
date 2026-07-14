@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "description": "RunPod Serverless flex endpoint for the HY-World light (4090) tier. Flex workers scale to zero when idle, so idle cost is $0 and the 15-min idle requirement is satisfied NATIVELY (no watchdog needed on serverless). Weights are baked into the image, so cold-start loads from local layers.",
+  "endpoint": {
+    "name": "hyworld-light-4090",
+    "computeType": "GPU",
+    "gpuTypeIds": ["NVIDIA GeForce RTX 4090"],
+    "gpuCount": 1,
+    "workersMin": 0,
+    "workersMax": 3,
+    "idleTimeout": 30,
+    "executionTimeoutMs": 1800000,
+    "flashboot": true,
+    "scalerType": "QUEUE_DELAY",
+    "scalerValue": 4,
+    "env": {
+      "SERVERLESS_TIER": "light-4090",
+      "AWS_S3_BUCKET_NAME": "intelliverse-world-templates",
+      "SCENES_DIR": "/workspace/scenes"
+    }
+  },
+  "notes": {
+    "workersMin": "0 => flex scale-to-zero. Set to 1 ONLY for latency-critical always-warm serving (billed continuously; see break-even in the canvas).",
+    "idleTimeout": "Seconds a worker stays warm after a request before scaling down. 30s balances FlashBoot reuse vs idle burn; billing still stops at scale-to-zero either way.",
+    "executionTimeoutMs": "30 min per request cap so a runaway light stage cannot bill unbounded.",
+    "guardrail": "The handler refuses 4K + heavy stages (A100-only-for-4K).",
+    "awsCredentials": "Inject scoped, short-lived AWS creds as endpoint env at deploy time (same least-privilege role as the pod path). Never bake creds into the image."
+  }
+}
