@@ -1,0 +1,16 @@
+{
+  "jobId": "full-lodge-a",
+  "prompt": "Alpine ski lodge great room: a roaring stone fireplace, heavy timber beams, an antler chandelier, a frosted snow-view window, and a fur-draped hearth define a warm wooden retreat at dusk. Eye-level central arrival, continuous ceiling and plank floor, coherent close-range architecture, cozy amber firelight and cool window light, readable timber and stone materials. No haze, bloom, clipped whites, floating debris, text artifacts, or foreground obstruction. Photorealistic.",
+  "seed": 4310,
+  "style": "",
+  "sceneType": "indoor",
+  "outputS3Prefix": "worldgen-full-staging/full-lodge-a",
+  "budgetUsd": 25.0,
+  "landmarks": [
+    {"id": "lodge-fireplace", "name": "Stone fireplace", "promptPhrase": "stone fireplace", "checkpointId": "cp-1"},
+    {"id": "lodge-beams", "name": "Timber beams", "promptPhrase": "heavy timber beams", "checkpointId": "cp-2"},
+    {"id": "lodge-chandelier", "name": "Antler chandelier", "promptPhrase": "antler chandelier", "checkpointId": "cp-3"},
+    {"id": "lodge-window", "name": "Snow-view window", "promptPhrase": "frosted snow-view window", "checkpointId": "cp-4"},
+    {"id": "lodge-hearth", "name": "Fur-draped hearth", "promptPhrase": "fur-draped hearth", "checkpointId": "cp-5"}
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "jobId": "full-museum-a",
+  "prompt": "Modern museum gallery: illuminated glass display cases, mounted wall exhibits, engraved gallery signage, tall marble columns, and a bright ceiling skylight define a spacious exhibition hall. Eye-level central arrival, continuous ceiling and polished stone floor, coherent close-range architecture, even neutral daylight with focused exhibit spots, readable placards and materials. No haze, bloom, clipped whites, floating debris, text artifacts, or foreground obstruction. Photorealistic.",
+  "seed": 4348,
+  "style": "",
+  "sceneType": "indoor",
+  "outputS3Prefix": "worldgen-full-staging/full-museum-a",
+  "budgetUsd": 25.0,
+  "landmarks": [
+    {"id": "museum-cases", "name": "Glass display cases", "promptPhrase": "illuminated glass display cases", "checkpointId": "cp-1"},
+    {"id": "museum-exhibits", "name": "Wall exhibits", "promptPhrase": "mounted wall exhibits", "checkpointId": "cp-2"},
+    {"id": "museum-signage", "name": "Gallery signage", "promptPhrase": "engraved gallery signage", "checkpointId": "cp-3"},
+    {"id": "museum-columns", "name": "Marble columns", "promptPhrase": "tall marble columns", "checkpointId": "cp-4"},
+    {"id": "museum-skylight", "name": "Ceiling skylight", "promptPhrase": "bright ceiling skylight", "checkpointId": "cp-5"}
+  ]
+}
