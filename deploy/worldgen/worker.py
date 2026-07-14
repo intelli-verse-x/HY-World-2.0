@@ -1146,6 +1146,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--data_dir", str(scene_dir / "gs_data"), "--result_dir", str(result_dir),
                 "--max_steps", steps, "--save_steps", steps, "--eval_steps", steps,
                 "--ply_steps", steps, "--save_ply", "--convert_to_spz", "--disable_video",
+                "--disable_viewer",
                 "--use_scale_regularization", "--antialiased",
                 "--depth_loss", "--normal_loss", "--sky_depth_from_pcd",
                 "--use_mask_gaussian", "--mask_export_stochastic",
@@ -1155,11 +1156,19 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--strategy.reset-every", "99990", "--strategy.grow-grad2d", "0.0001",
                 "--strategy.prune-scale3d", "0.1",
             ], cwd=wg, log_path=scene_dir / "logs/gs_train.log")
-            final_landmarks = finalize_landmark_mapping(scene_dir, result_dir)
-            checkpoint("gs_train", stage_start, {
-                "allFiveLandmarksMapped": all(
+            try:
+                final_landmarks = finalize_landmark_mapping(scene_dir, result_dir)
+                all_mapped = all(
                     item.get("reconstructedRegion") for item in final_landmarks["landmarks"]
-                ),
+                )
+            except Exception as exc:
+                # Non-fatal: landmark 3D-region projection is optional metadata for the
+                # independent visual gate. A missing landmark-map.json (VLM gateway error
+                # upstream) must not discard a fully trained/exported splat.
+                logger.warning("landmark finalize skipped (non-fatal): %s", exc)
+                all_mapped = None
+            checkpoint("gs_train", stage_start, {
+                "allFiveLandmarksMapped": all_mapped,
                 "landmarkMap": "scene/landmark-map.json",
             })
         if pause_requested("gs_train"):
@@ -1197,7 +1206,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
             "stagingSplatUrl": staging_splat_urls["desktop"],
             "stagingSplatUrls": staging_splat_urls,
         }
-        set_status("done", state="done", **result)
+        set_status("done", **result)  # result already carries state="done"
         r.rpush(Config.DONE_QUEUE, json.dumps(result))
         logger.info(f"=== JOB {job_id} DONE in {elapsed}s -> s3://{Config.S3_BUCKET}/{prefix}/")
 

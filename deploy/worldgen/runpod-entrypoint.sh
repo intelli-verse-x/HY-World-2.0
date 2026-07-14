@@ -236,6 +236,128 @@ if os.path.isfile(tp):
         print("[patch] caption fallback skipped")
 PYEOF
 
+# world_gs_trainer keeps a viser viewer alive with time.sleep(1000000) unless
+# --disable_viewer is passed, so gs_train saves the splat/ply/mesh then hangs forever
+# and the stage never returns. Add --disable_viewer to the worker's gs_train command.
+if ! grep -q '"--disable_video", "--disable_viewer"' /app/deploy/worldgen/worker.py; then
+  sed -i 's/"--convert_to_spz", "--disable_video",/"--convert_to_spz", "--disable_video", "--disable_viewer",/' /app/deploy/worldgen/worker.py || true
+fi
+
+# The final success marker calls set_status("done", state="done", **result) but `result`
+# already contains state="done" -> "multiple values for keyword argument 'state'". This
+# fires AFTER all artifacts upload, so it mislabels a fully complete job as failed. Drop
+# the redundant kwarg.
+sed -i 's/set_status("done", state="done", \*\*result)/set_status("done", **result)/' /app/deploy/worldgen/worker.py || true
+
+# finalize_landmark_mapping reads scene_dir/landmark-map.json, which is only written by
+# validate_landmark_visibility — now non-fatal, so on a VLM-gateway error that file is
+# absent and finalize crashes AFTER a fully trained/exported splat, blocking the upload.
+# Make finalize non-fatal too so the gs_train checkpoint + artifact upload still happen.
+python3 - <<'PYEOF' || true
+p="/app/deploy/worldgen/worker.py"
+import os
+if os.path.isfile(p):
+    s=open(p).read()
+    old=('            final_landmarks = finalize_landmark_mapping(scene_dir, result_dir)\n'
+         '            checkpoint("gs_train", stage_start, {\n'
+         '                "allFiveLandmarksMapped": all(\n'
+         '                    item.get("reconstructedRegion") for item in final_landmarks["landmarks"]\n'
+         '                ),\n'
+         '                "landmarkMap": "scene/landmark-map.json",\n'
+         '            })')
+    new=('            try:\n'
+         '                final_landmarks = finalize_landmark_mapping(scene_dir, result_dir)\n'
+         '                all_mapped = all(item.get("reconstructedRegion") for item in final_landmarks["landmarks"])\n'
+         '            except Exception as exc:\n'
+         '                logger.warning("landmark finalize skipped (non-fatal): %s", exc)\n'
+         '                all_mapped = None\n'
+         '            checkpoint("gs_train", stage_start, {\n'
+         '                "allFiveLandmarksMapped": all_mapped,\n'
+         '                "landmarkMap": "scene/landmark-map.json",\n'
+         '            })')
+    if old in s:
+        open(p,"w").write(s.replace(old,new)); print("[patch] finalize_landmark_mapping non-fatal applied")
+    else:
+        print("[patch] finalize_landmark_mapping patch skipped (already applied)")
+PYEOF
+
+# The baked image's worker.py predates --disable_viewer, so after gs_train finishes it
+# runs the trainer's `time.sleep(1000000)` viser-serve loop and never exits -> the stage
+# hangs and artifacts (ply/spz/mesh) are never uploaded. Inject --disable_viewer so
+# gs_train exits cleanly after saving and the worker uploads.
+if ! grep -q '"--disable_video", "--disable_viewer"' /app/deploy/worldgen/worker.py; then
+  sed -i 's/"--convert_to_spz", "--disable_video",/"--convert_to_spz", "--disable_video", "--disable_viewer",/' /app/deploy/worldgen/worker.py || true
+fi
+
+# gs_train post-mesh sync calls dist.barrier() at world_gs_trainer.py:1713, but `dist`
+# is only imported inside the multi-rank branch -> UnboundLocalError on the single-GPU
+# path (after training+mesh export fully complete). Import locally + guard on an
+# initialized process group so single-GPU runs don't crash at the finish line.
+python3 - <<'PYEOF' || true
+p="/app/hyworld2/worldgen/world_gs_trainer.py"
+import os
+if os.path.isfile(p):
+    s=open(p).read()
+    old="                    dist.barrier()\n\n            # Turn Gradients into Sparse Tensor before running optimizer"
+    new=("                    import torch.distributed as dist\n"
+         "                    if dist.is_available() and dist.is_initialized():\n"
+         "                        dist.barrier()\n\n"
+         "            # Turn Gradients into Sparse Tensor before running optimizer")
+    if old in s:
+        open(p,"w").write(s.replace(old,new)); print("[patch] gs_train dist.barrier guard applied")
+    else:
+        print("[patch] gs_train dist.barrier guard skipped (already applied)")
+PYEOF
+
+# gsplat_maskgaussian is AOT-built in the image for sm86/sm89 only (cluster A10G/L4).
+# On the H100 portable runner (sm90) the rasterizer's PTX JIT fails
+# ("provided PTX was compiled with an unsupported toolchain"), which kills gs_train.
+# Rebuild the CUDA extension for the pod's actual arch once, caching the built tree on
+# the network volume so subsequent pods/worlds skip the ~5-8min compile.
+GS_DIR=/app/hyworld2/worldgen/third_party/gsplat_maskgaussian
+GS_CAP="$(python3 -c 'import torch;M,m=torch.cuda.get_device_capability();print(f"{M}{m}")' 2>/dev/null || echo '')"
+if [[ -n "$GS_CAP" && -d "$GS_DIR" && "$GS_CAP" != "86" && "$GS_CAP" != "89" ]]; then
+  GS_ARCH="${GS_CAP:0:1}.${GS_CAP:1}"
+  GS_CACHE="${MODEL_ROOT%/hf-cache}/gsplat-sm${GS_CAP}"
+  # NOTE: importing gsplat.cuda._backend is NOT a valid readiness check — the baked .so
+  # loads fine but its embedded PTX (built +PTX for 8.9) only JIT-fails at kernel launch
+  # on sm90 ("unsupported toolchain"). We must produce a NATIVE sm${GS_CAP} cubin, so
+  # either restore a cached native build or force a rebuild. Never trust the .so import.
+  if [[ -f "$GS_CACHE/.built" ]]; then
+    echo "[gsplat] restoring cached native sm${GS_CAP} build from volume"
+    cp -a "$GS_CACHE/pkg/." "$GS_DIR/" 2>/dev/null || true
+  else
+    echo "[gsplat] building native CUDA extension for sm${GS_CAP} (TORCH_CUDA_ARCH_LIST=${GS_ARCH})…"
+    if ( cd "$GS_DIR" && TORCH_CUDA_ARCH_LIST="$GS_ARCH" MAX_JOBS=4 \
+           pip install --no-cache-dir --no-build-isolation -e . --force-reinstall --no-deps ); then
+      echo "[gsplat] rebuild OK; caching native sm${GS_CAP} build to volume"
+      mkdir -p "$GS_CACHE/pkg" && cp -a "$GS_DIR/." "$GS_CACHE/pkg/" 2>/dev/null && touch "$GS_CACHE/.built" || true
+    else
+      echo "[gsplat] rebuild FAILED (gs_train will error)"
+    fi
+  fi
+
+  # fused-ssim is another AOT CUDA extension (installed non-editable from git, no PTX
+  # fallback) used by gs_train's SSIM loss -> "no kernel image available" on sm90.
+  # Build a wheel for the pod arch once, cache it on the volume, reinstall from cache.
+  FS_CACHE="${MODEL_ROOT%/hf-cache}/fused-ssim-sm${GS_CAP}"
+  FS_GIT="git+https://github.com/rahul-goel/fused-ssim@328dc9836f513d00c4b5bc38fe30478b4435cbb5"
+  if compgen -G "$FS_CACHE/*.whl" >/dev/null 2>&1; then
+    echo "[fused-ssim] installing cached sm${GS_CAP} wheel from volume"
+    pip install --no-cache-dir --force-reinstall --no-deps "$FS_CACHE"/*.whl || echo "[fused-ssim] cache install FAILED"
+  else
+    echo "[fused-ssim] building sm${GS_CAP} wheel (TORCH_CUDA_ARCH_LIST=8.9;${GS_ARCH})…"
+    mkdir -p "$FS_CACHE"
+    if TORCH_CUDA_ARCH_LIST="8.9;${GS_ARCH}" MAX_JOBS=4 \
+         pip wheel --no-cache-dir --no-build-isolation --no-deps "$FS_GIT" -w "$FS_CACHE"; then
+      pip install --no-cache-dir --force-reinstall --no-deps "$FS_CACHE"/*.whl \
+        && echo "[fused-ssim] rebuild+cache OK" || echo "[fused-ssim] wheel install FAILED"
+    else
+      echo "[fused-ssim] wheel build FAILED (gs_train will error)"
+    fi
+  fi
+fi
+
 python /app/deploy/worldgen/worker.py &
 WORKER_PID=$!
 
