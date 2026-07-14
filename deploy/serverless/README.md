@@ -7,8 +7,16 @@ scales to zero), and bursts under load.
 
 ## What runs here (light tier)
 
+> **Built image (2026-07-13):**
+> `970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-serverless-4090`
+> tags `baked-light` / `git-cdbc688`,
+> digest `sha256:02bc38b3b6b4ac8cc599d6159c70d6537b95e024e0ba4cdd70177640fcd3bc1e`,
+> `linux/amd64`, ~21.6 GB compressed, **11.4 GB weights baked in** and verified
+> offline (`HF_HUB_OFFLINE=1`). Pull/registry-auth per provider: see
+> `../../docs/gpu-cost-strategy-runbook.md` → "Built serverless image (ECR)".
+
 A 4090 is 24 GB, so this image only serves the **light** stages and bakes only
-the light, ungated weights (~5.8 GB):
+the light, ungated weights (11.4 GB on disk):
 
 | Baked (ungated) | Stage it serves |
 | --- | --- |
@@ -31,15 +39,19 @@ See `../worldgen/runpod_launch.py` (PR #7) for the A100 pod path and
 ## Deploy
 
 ```bash
-# 1. build + push the baked image (prefer an x86/in-cluster builder for CUDA)
-bash deploy/serverless/build_and_push.sh
+# 1. build + push the baked image — ONLY on change; already built+pushed.
+#    x86 host:  bash deploy/serverless/build_and_push.sh
+#    arm64/mac: in-cluster amd64 BuildKit (CUDA won't compile under qemu);
+#               mirror deploy/worldgen/k8s/build-job.yaml with dockerfile dir
+#               deploy/serverless and output repo hy-world-serverless-4090.
 
-# 2. validate auth + config without creating anything (safe while the pod runs)
+# 2. validate auth + config without creating anything (safe anytime)
 python deploy/serverless/deploy_endpoint.py --dry-run
 
-# 3. create the flex endpoint (scale-to-zero; $0 idle)
+# 3. create the flex endpoint (scale-to-zero; $0 idle) against the verified digest
 python deploy/serverless/deploy_endpoint.py \
-  --image 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-serverless-4090@sha256:...
+  --image 970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-serverless-4090@sha256:02bc38b3b6b4ac8cc599d6159c70d6537b95e024e0ba4cdd70177640fcd3bc1e \
+  --registry-auth-id <ecrCredId>   # ECR is private; 12h token via `aws ecr get-login-password`
 ```
 
 ## Idle guarantee

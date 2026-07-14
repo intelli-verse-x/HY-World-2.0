@@ -1,0 +1,102 @@
+# In-cluster amd64 BuildKit job that builds deploy/serverless/Dockerfile (baked
+# weights) and pushes it to ECR hy-world-serverless-4090:baked-light. Used instead
+# of a local `docker build` because arm64/macOS cannot compile the CUDA extensions
+# (gsplat/fused-ssim) in reasonable time. Mirrors deploy/worldgen/k8s/build-job.yaml.
+#
+# Prereqs (created at deploy time, torn down after):
+#   - build context tar in the private bucket:
+#       git archive --format=tar.gz -o ctx.tgz HEAD
+#       aws s3 cp ctx.tgz s3://intelliverse-hyworld-private-us-east-1/build/hy-world-serverless/context.tar.gz
+#   - ECR push secret with a fresh 12h token:
+#       kubectl -n aicart create secret docker-registry hy-world-serverless-ecr-push \
+#         --docker-server=970547373533.dkr.ecr.us-east-1.amazonaws.com \
+#         --docker-username=AWS --docker-password="$(aws ecr get-login-password --region us-east-1)"
+# Verified build: digest sha256:02bc38b3b6b4ac8cc599d6159c70d6537b95e024e0ba4cdd70177640fcd3bc1e
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hy-world-serverless-build-ws
+  namespace: aicart
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hy-world-serverless-build
+  namespace: aicart
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: hy-world-serverless-build
+    spec:
+      serviceAccountName: ssm-access
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+      - key: arch-amd64
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      initContainers:
+      - name: fetch-context
+        image: 970547373533.dkr.ecr.us-east-1.amazonaws.com/ecr-public/aws-cli/aws-cli:2.22.35
+        command:
+        - sh
+        - -c
+        - |
+          set -eu
+          rm -rf /workspace/ctx && mkdir -p /workspace/ctx
+          aws s3 cp s3://intelliverse-hyworld-private-us-east-1/build/hy-world-serverless/context.tar.gz /tmp/ctx.tgz
+          yum install -y tar gzip >/dev/null
+          tar -xzf /tmp/ctx.tgz -C /workspace/ctx
+          chmod -R a+rwX /workspace
+          echo "context ready:"; ls /workspace/ctx/deploy/serverless
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        resources:
+          requests: {cpu: 500m, memory: 512Mi}
+      containers:
+      - name: buildkit
+        image: moby/buildkit:v0.16.0-rootless
+        command:
+        - buildctl-daemonless.sh
+        args:
+        - build
+        - --frontend=dockerfile.v0
+        - --local=context=/workspace/ctx
+        - --local=dockerfile=/workspace/ctx/deploy/serverless
+        - --opt=filename=Dockerfile
+        - --opt=platform=linux/amd64
+        - --output=type=image,name=970547373533.dkr.ecr.us-east-1.amazonaws.com/hy-world-serverless-4090:baked-light,push=true
+        env:
+        - name: BUILDKITD_FLAGS
+          value: --oci-worker-no-process-sandbox --root /workspace/buildkit
+        - name: DOCKER_CONFIG
+          value: /workspace/.docker
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: Unconfined
+        resources:
+          requests: {cpu: "2", memory: 8Gi}
+          limits: {cpu: "7", memory: 26Gi}
+        volumeMounts:
+        - {mountPath: /workspace, name: ws}
+        - {mountPath: /workspace/.docker/config.json, name: ecr-auth, subPath: .dockerconfigjson}
+      volumes:
+      - name: ws
+        persistentVolumeClaim:
+          claimName: hy-world-serverless-build-ws
+      - name: ecr-auth
+        secret:
+          secretName: hy-world-serverless-ecr-push
