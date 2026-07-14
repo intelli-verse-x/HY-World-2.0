@@ -97,6 +97,23 @@ fi
 mkdir -p "$HOME/.cache/huggingface"
 ln -sfn "$MODEL_ROOT/hub" "$HOME/.cache/huggingface/hub"
 
+# ---- Feasibility probe mode: run a bounded experiment instead of the worker. ----
+# Assess higher-resolution native HY-Pano generation (VRAM/time/quality) before
+# committing GPU to a full higher-res converged run. Skips the worker preflight,
+# redis, socat, and all gs_train patches (irrelevant to a pano probe), then
+# self-terminates. The probe script is delivered inline by the launcher.
+if [[ "${PROBE_MODE:-}" == "pano" ]]; then
+  echo "[probe] pano resolution probe mode"
+  export HF_HOME="$MODEL_ROOT" HF_HUB_OFFLINE=1
+  export MODEL_BUCKET AWS_REGION
+  cd /app/hyworld2/panogen
+  python /app/deploy/worldgen/pano_res_probe.py || echo "[probe] probe script errored"
+  aws s3 cp "$LOG_FILE" "$LOG_S3" --region "$AWS_REGION" --only-show-errors 2>/dev/null || true
+  echo "[probe] done; self-terminating"
+  runpod_terminate_self
+  exit 0
+fi
+
 # Local Redis for the worker queue semantics.
 redis-server --daemonize yes --save '' --appendonly no
 for i in $(seq 1 30); do redis-cli ping >/dev/null 2>&1 && break; sleep 1; done

@@ -136,6 +136,9 @@ def main() -> int:
                          "196GB weight cache is staged once and reused (skips the "
                          "~22min per-run S3 sync). RunPod pins the pod to its DC.")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--probe", default=None,
+                    help="feasibility probe mode (e.g. 'pano'); runs the probe "
+                         "instead of the worker, then self-terminates")
     args = ap.parse_args()
 
     job = json.load(open(args.job))
@@ -173,6 +176,8 @@ def main() -> int:
         "RUNPOD_API_KEY": key,
         **pod_creds,
     }
+    if args.probe:
+        env["PROBE_MODE"] = args.probe
     # Hero run uses container disk (no network volume) to avoid data-center
     # pinning; RunPod places the pod in whichever US Secure Cloud DC has an
     # 80 GB GPU available.
@@ -197,9 +202,21 @@ def main() -> int:
         "method='DELETE',headers={'Authorization':'Bearer '+os.environ['RUNPOD_API_KEY']}),timeout=20)\" ; "
         "kill -9 1"
     )
+    # Probe scripts are also new repo files not baked into the image; deliver inline
+    # to their expected on-disk path so the entrypoint's PROBE_MODE branch can run them
+    # (they resolve panogen imports relative to /app/deploy/worldgen/).
+    probe_deliver = ""
+    if args.probe == "pano":
+        probe_path = os.path.join(os.path.dirname(ENTRYPOINT_PATH), "pano_res_probe.py")
+        with open(probe_path, "rb") as fh:
+            probe_b64 = base64.b64encode(fh.read()).decode()
+        probe_deliver = (
+            f"printf %s '{probe_b64}' | base64 -d > /app/deploy/worldgen/pano_res_probe.py && "
+        )
     start_cmd = (
         f"( {failsafe} ) & "
         f"printf %s '{script_b64}' | base64 -d > /tmp/runpod-entrypoint.sh && "
+        f"{probe_deliver}"
         "exec bash /tmp/runpod-entrypoint.sh"
     )
     pod_body = {
