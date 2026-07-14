@@ -102,12 +102,17 @@ ln -sfn "$MODEL_ROOT/hub" "$HOME/.cache/huggingface/hub"
 # committing GPU to a full higher-res converged run. Skips the worker preflight,
 # redis, socat, and all gs_train patches (irrelevant to a pano probe), then
 # self-terminates. The probe script is delivered inline by the launcher.
-if [[ "${PROBE_MODE:-}" == "pano" ]]; then
-  echo "[probe] pano resolution probe mode"
+if [[ -n "${PROBE_MODE:-}" ]]; then
+  echo "[probe] probe mode: ${PROBE_MODE}"
   export HF_HOME="$MODEL_ROOT" HF_HUB_OFFLINE=1
   export MODEL_BUCKET AWS_REGION
   cd /app/hyworld2/panogen
-  python /app/deploy/worldgen/pano_res_probe.py || echo "[probe] probe script errored"
+  export PYTHONUNBUFFERED=1
+  case "${PROBE_MODE}" in
+    pano)    python -u /app/deploy/worldgen/pano_res_probe.py || echo "[probe] script errored" ;;
+    tiledsr) python -u /app/deploy/worldgen/tiledsr_probe.py || echo "[probe] script errored" ;;
+    *)       echo "[probe] unknown PROBE_MODE ${PROBE_MODE}" ;;
+  esac
   aws s3 cp "$LOG_FILE" "$LOG_S3" --region "$AWS_REGION" --only-show-errors 2>/dev/null || true
   echo "[probe] done; self-terminating"
   runpod_terminate_self

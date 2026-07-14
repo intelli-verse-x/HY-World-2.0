@@ -93,6 +93,14 @@ class Config:
     MAX_JOB_SECONDS = int(os.environ.get("MAX_JOB_SECONDS", "16200"))  # 4.5 h hard cap
     PANO_WIDTH = int(os.environ.get("PANO_WIDTH", "1952"))
     PANO_HEIGHT = int(os.environ.get("PANO_HEIGHT", "960"))
+    # Higher-res recipe (genuine detail without LoRA composition duplication): refine the
+    # coherent native base pano to PANO_SR_* via tiled equirect SR, then render views at a
+    # higher splitted resolution so multi-view video/3DGS aren't stuck at 832x480.
+    HIGHRES_PANO = os.environ.get("HIGHRES_PANO", "0") == "1"
+    PANO_SR_WIDTH = int(os.environ.get("PANO_SR_WIDTH", "3840"))
+    PANO_SR_HEIGHT = int(os.environ.get("PANO_SR_HEIGHT", "1920"))
+    VIEW_RESOLUTION = int(os.environ.get("VIEW_RESOLUTION", "480"))  # traj_generate splitted res
+    POSTPROCESS_SPLAT = os.environ.get("POSTPROCESS_SPLAT", "0") == "1"
     GS_MAX_STEPS = int(os.environ.get("GS_MAX_STEPS", "2000"))  # x4 GPUs per upstream README
     SOURCE_COMMIT = os.environ.get("SOURCE_COMMIT", "unknown")
     IMAGE_URI = os.environ.get("IMAGE_URI", "unknown")
@@ -687,6 +695,23 @@ def export_viewer_splat(result_dir: Path) -> Path:
     rotation /= np.linalg.norm(rotation, axis=1, keepdims=True) + 1e-12
     record["rotation"] = np.clip(rotation * 128.0 + 128.0, 0, 255).astype(np.uint8)
     sorted_record = record[order]
+
+    if Config.POSTPROCESS_SPLAT:
+        # Converged recipe: cull blobby/dark/void gaussians, calibrate scale into the
+        # 0.012-0.026 band, lum-clamp, and build genuine (non-identical) LoD tiers.
+        try:
+            import splat_postprocess
+            tier_records = splat_postprocess.build_tiers(sorted_record)
+            for name, rec in tier_records.items():
+                tier_path = result_dir / name
+                tier_path.write_bytes(rec.tobytes())
+                logger.info("viewer tier %s exported: %d gaussians, %.1fMB",
+                            name, len(rec), tier_path.stat().st_size / 1e6)
+            logger.info("viewer splats exported (post-processed) from PLY %s", ply_path)
+            return result_dir / "world.splat"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("splat post-process failed (%s); falling back to raw tiers", exc)
+
     tiers = {
         "world-mobile.splat": min(count, 2_000_000),   # <=64 MB
         "world-desktop.splat": min(count, 4_000_000), # <=128 MB
@@ -745,6 +770,25 @@ def generate_panorama(seed_image: Path, prompt: str, out_path: Path, seed: int =
         "--seed", str(seed),
     ]
     run_stage("panorama", cmd, cwd=Config.REPO_DIR / "hyworld2" / "panogen")
+
+
+def generate_highres_panorama(base_pano: Path, prompt: str, out_path: Path) -> None:
+    """Tiled equirect SR: refine the coherent base pano to PANO_SR_* without the DiT
+    composition-duplication seen in naive higher native-res generation. Subprocess so
+    GPU memory is released before the multi-GPU worldgen stages."""
+    script = Config.REPO_DIR / "deploy" / "worldgen" / "pano_tiled_sr.py"
+    tmp_out = out_path.with_name("panorama_hr.png")
+    cmd = [
+        sys.executable, str(script),
+        "--input", str(base_pano),
+        "--output", str(tmp_out),
+        "--width", str(Config.PANO_SR_WIDTH),
+        "--height", str(Config.PANO_SR_HEIGHT),
+        "--prompt", prompt,
+    ]
+    run_stage("panorama_sr", cmd, cwd=Config.REPO_DIR / "hyworld2" / "panogen")
+    if tmp_out.exists():
+        tmp_out.replace(out_path)
 
 
 # --------------------------------------------------------------------------
@@ -880,9 +924,16 @@ def publish_provenance_manifest(s3, job_id: str, output_prefix: str, prompt_meta
         "image": Config.IMAGE_URI,
         "prompt": prompt_meta,
         "nativePanoramaResolution": [Config.PANO_WIDTH, Config.PANO_HEIGHT],
-        "upscaledPanoramaResolution": None,
+        "upscaledPanoramaResolution": (
+            [Config.PANO_SR_WIDTH, Config.PANO_SR_HEIGHT] if Config.HIGHRES_PANO else None
+        ),
+        "viewRenderResolution": Config.VIEW_RESOLUTION,
         "truthfulResolutionNote": (
-            "HY-Pano Qwen backend native output; no super-resolution label or synthetic 4K claim"
+            "HY-Pano Qwen native base 1952x960, refined by tiled equirect img2img SR to "
+            f"{Config.PANO_SR_WIDTH}x{Config.PANO_SR_HEIGHT} (genuine detail, not naive "
+            "higher native-res which duplicates composition; not a synthetic 4K claim)"
+            if Config.HIGHRES_PANO
+            else "HY-Pano Qwen backend native output; no super-resolution or synthetic 4K claim"
         ),
         "stages": stages,
         "totalEstimatedCostUsd": round(sum(item.get("estimatedCostUsd") or 0 for item in stages), 4),
@@ -1064,6 +1115,10 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
         if not completed("panorama"):
             stage_start = time.time()
             generate_panorama(seed_path, full_prompt, pano_path, seed=int(job.get("seed", 42)))
+            if Config.HIGHRES_PANO:
+                # Genuine higher-res: tiled equirect SR on the coherent native base
+                # (in-place overwrite so downstream reads the higher-res pano).
+                generate_highres_panorama(pano_path, full_prompt, pano_path)
             checkpoint("panorama", stage_start)
         if pause_requested("panorama"):
             return
@@ -1083,6 +1138,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--target_path", str(scene_dir), *vlm_args,
                 "--apply_nav_traj", "--apply_up_route", "--apply_recon_iteration",
                 "--force_vlm", "--skip_exist",
+                "--splitted_resolution", str(Config.VIEW_RESOLUTION),
             ], cwd=wg, log_path=scene_dir / "logs/traj_generate.log")
             checkpoint("traj_generate", stage_start)
         if pause_requested("traj_generate"):

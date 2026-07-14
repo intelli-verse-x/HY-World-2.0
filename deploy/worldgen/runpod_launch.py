@@ -129,8 +129,10 @@ def main() -> int:
     ap.add_argument("--rate-usd", type=float, default=2.69,
                     help="verified pod hourly rate for cost accounting")
     ap.add_argument("--hard-deadline-seconds", type=int, default=14400)
-    ap.add_argument("--confirm-seconds", type=int, default=600,
-                    help="max time to confirm RUNNING before terminating")
+    ap.add_argument("--confirm-seconds", type=int, default=1200,
+                    help="max time to confirm RUNNING before terminating. Must exceed the "
+                         "pod cold-boot + network-volume attach time (a 400GB volume + image "
+                         "pull can take 5-8 min); too-low values DELETE a healthy pod mid-run.")
     ap.add_argument("--network-volume-id", default=None,
                     help="attach an existing encrypted volume at /models so the "
                          "196GB weight cache is staged once and reused (skips the "
@@ -139,6 +141,9 @@ def main() -> int:
     ap.add_argument("--probe", default=None,
                     help="feasibility probe mode (e.g. 'pano'); runs the probe "
                          "instead of the worker, then self-terminates")
+    ap.add_argument("--gpu-type", default=None,
+                    help="pin a single RunPod gpuTypeId (e.g. 'NVIDIA H200') instead "
+                         "of the default 80GB-first preference list")
     args = ap.parse_args()
 
     job = json.load(open(args.job))
@@ -206,13 +211,20 @@ def main() -> int:
     # to their expected on-disk path so the entrypoint's PROBE_MODE branch can run them
     # (they resolve panogen imports relative to /app/deploy/worldgen/).
     probe_deliver = ""
-    if args.probe == "pano":
-        probe_path = os.path.join(os.path.dirname(ENTRYPOINT_PATH), "pano_res_probe.py")
-        with open(probe_path, "rb") as fh:
-            probe_b64 = base64.b64encode(fh.read()).decode()
-        probe_deliver = (
-            f"printf %s '{probe_b64}' | base64 -d > /app/deploy/worldgen/pano_res_probe.py && "
-        )
+    if args.probe:
+        # Deliver the probe scripts the entrypoint's PROBE_MODE branch may run. Tiled-SR
+        # depends on pano_tiled_sr.py, so ship that too.
+        _pdir = os.path.dirname(ENTRYPOINT_PATH)
+        _probe_files = {
+            "pano": ["pano_res_probe.py"],
+            "tiledsr": ["pano_tiled_sr.py", "tiledsr_probe.py"],
+        }.get(args.probe, [])
+        for _fname in _probe_files:
+            with open(os.path.join(_pdir, _fname), "rb") as fh:
+                _b64 = base64.b64encode(fh.read()).decode()
+            probe_deliver += (
+                f"printf %s '{_b64}' | base64 -d > /app/deploy/worldgen/{_fname} && "
+            )
     start_cmd = (
         f"( {failsafe} ) & "
         f"printf %s '{script_b64}' | base64 -d > /tmp/runpod-entrypoint.sh && "
@@ -225,7 +237,7 @@ def main() -> int:
         "containerRegistryAuthId": auth_id,
         "cloudType": "SECURE",
         "computeType": "GPU",
-        "gpuTypeIds": GPU_PREFERENCE,
+        "gpuTypeIds": [args.gpu_type] if args.gpu_type else GPU_PREFERENCE,
         "gpuCount": 1,
         "containerDiskInGb": args.volume_gb,
         "env": env,
