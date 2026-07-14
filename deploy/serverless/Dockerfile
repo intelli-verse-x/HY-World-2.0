@@ -67,9 +67,13 @@ RUN mkdir -p /app/hyworld2/worldgen/third_party/gsplat_maskgaussian/gsplat/cuda/
 COPY --from=weights /opt/hf-cache /opt/hf-cache
 # traj_generate resolves SAM/GroundingDINO/SAM3/MoGe via the hardcoded
 # ~/.cache/huggingface/hub dir; point it at the baked cache (offline).
-RUN mkdir -p /root/.cache/huggingface && ln -sfn /opt/hf-cache/hub /root/.cache/huggingface/hub
+# bake_weights.py writes the HF hub cache directly under /opt/hf-cache (models--*),
+# so HF_HUB_CACHE points there and traj_generate's hardcoded
+# ~/.cache/huggingface/hub is symlinked to it for offline resolution.
+RUN mkdir -p /root/.cache/huggingface && ln -sfn /opt/hf-cache /root/.cache/huggingface/hub
 
 ENV PYTHONPATH=/app \
+    HF_HUB_CACHE=/opt/hf-cache \
     SAM_BOX_REPO_ID=facebook/sam-vit-base \
     SAM3_REPO_ID=DiffusionWave/sam3
 

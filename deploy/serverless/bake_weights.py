@@ -40,12 +40,24 @@ def main() -> int:
             continue
         rev = spec.get("revision")
         print(f"[bake] {repo_id}@{(rev or 'main')[:12]} (~{spec.get('approxGb', '?')} GB)")
-        snapshot_download(
+        local = snapshot_download(
             repo_id=repo_id,
             revision=rev,
             cache_dir=str(out),
             token=os.environ.get("HF_TOKEN") or None,
         )
+        # We pin an exact commit for reproducibility, which populates
+        # snapshots/<commit>/ but NOT refs/main. The pipeline resolves models
+        # with the default "main" revision (snapshot_download / from_pretrained,
+        # no revision arg), so write the refs/main pointer to the baked commit;
+        # otherwise offline (HF_HUB_OFFLINE=1) lookups fail with
+        # LocalEntryNotFoundError.
+        snap_dir = Path(local)
+        commit = snap_dir.name
+        repo_dir = snap_dir.parent.parent
+        refs = repo_dir / "refs"
+        refs.mkdir(parents=True, exist_ok=True)
+        (refs / "main").write_text(commit)
         total += float(spec.get("approxGb", 0) or 0)
     print(f"[bake] done; ~{total:.1f} GB staged under {out}")
     return 0
