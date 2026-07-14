@@ -181,6 +181,11 @@ def main() -> int:
         "RUNPOD_API_KEY": key,
         **pod_creds,
     }
+    # Merge additive job-level env (e.g. PROBE_BASE_KEY, recipe flags) without letting
+    # a job clobber the required/secret keys set above.
+    for _k, _v in (job.get("env") or {}).items():
+        if _k not in env:
+            env[_k] = str(_v)
     if args.probe:
         env["PROBE_MODE"] = args.probe
     # Hero run uses container disk (no network volume) to avoid data-center
@@ -207,24 +212,52 @@ def main() -> int:
         "method='DELETE',headers={'Authorization':'Bearer '+os.environ['RUNPOD_API_KEY']}),timeout=20)\" ; "
         "kill -9 1"
     )
-    # Probe scripts are also new repo files not baked into the image; deliver inline
-    # to their expected on-disk path so the entrypoint's PROBE_MODE branch can run them
-    # (they resolve panogen imports relative to /app/deploy/worldgen/).
+    # The baked image predates these recipe files / worker.py edits, so deliver them
+    # inline (base64) to /app/deploy/worldgen/ before the entrypoint runs. Worker runs
+    # get the full higher-res recipe overlay (SR/shell/post-pass + updated worker.py);
+    # probe runs get only what the PROBE_MODE branch needs. Entrypoint seds against
+    # worker.py are grep-guarded, so overwriting with the newer file is safe.
+    _pdir = os.path.dirname(ENTRYPOINT_PATH)
+    _recipe_overlay = [
+        "worker.py", "pano_tiled_sr.py", "splat_postprocess.py",
+        "realesrgan_sr.py", "pano_shell.py",
+    ]
+    _probe_extra = {
+        "pano": ["pano_res_probe.py"],
+        "tiledsr": ["pano_tiled_sr.py", "tiledsr_probe.py"],
+        "esrgan": ["realesrgan_sr.py", "esrgan_probe.py"],
+    }
     probe_deliver = ""
     if args.probe:
-        # Deliver the probe scripts the entrypoint's PROBE_MODE branch may run. Tiled-SR
-        # depends on pano_tiled_sr.py, so ship that too.
-        _pdir = os.path.dirname(ENTRYPOINT_PATH)
-        _probe_files = {
-            "pano": ["pano_res_probe.py"],
-            "tiledsr": ["pano_tiled_sr.py", "tiledsr_probe.py"],
-        }.get(args.probe, [])
-        for _fname in _probe_files:
-            with open(os.path.join(_pdir, _fname), "rb") as fh:
+        # Probe files are small: inline base64 in dockerStartCmd is fine.
+        for _fname in dict.fromkeys(_probe_extra.get(args.probe, [])):
+            _fpath = os.path.join(_pdir, _fname)
+            if not os.path.exists(_fpath):
+                continue
+            with open(_fpath, "rb") as fh:
                 _b64 = base64.b64encode(fh.read()).decode()
             probe_deliver += (
                 f"printf %s '{_b64}' | base64 -d > /app/deploy/worldgen/{_fname} && "
             )
+    else:
+        # worker.py alone is ~82KB b64; inlining all 5 recipe files blows past RunPod's
+        # dockerStartCmd size limit (500 unmarshal error). Deliver them via the private
+        # bucket instead (the runner role can read/write it); the entrypoint fetches
+        # OVERLAY_S3_PREFIX into /app/deploy/worldgen/ before running the worker.
+        import boto3
+        _s3o = boto3.client(
+            "s3", region_name=args.region,
+            aws_access_key_id=pod_creds["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=pod_creds["AWS_SECRET_ACCESS_KEY"],
+            aws_session_token=pod_creds["AWS_SESSION_TOKEN"],
+        )
+        _overlay_key = f"worldgen-full-ops/overlay/{job['jobId']}"
+        for _fname in _recipe_overlay:
+            _fpath = os.path.join(_pdir, _fname)
+            if os.path.exists(_fpath):
+                _s3o.upload_file(_fpath, MODEL_BUCKET, f"{_overlay_key}/{_fname}")
+        env["OVERLAY_S3_PREFIX"] = f"s3://{MODEL_BUCKET}/{_overlay_key}"
+        print(f"overlay_uploaded s3://{MODEL_BUCKET}/{_overlay_key} ({len(_recipe_overlay)} files)")
     start_cmd = (
         f"( {failsafe} ) & "
         f"printf %s '{script_b64}' | base64 -d > /tmp/runpod-entrypoint.sh && "
