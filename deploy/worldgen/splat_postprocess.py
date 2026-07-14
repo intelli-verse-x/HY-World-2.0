@@ -26,9 +26,11 @@ SCALE_P99_TARGET = 0.022        # aim inside the 0.012-0.026 band
 OPACITY_FLOOR = 0.10            # sigmoid-space opacity as 0..1 (stored in color[:,3]/255)
 DARK_LUM = 0.06                # 0..1 luminance below which a splat is a dark stray
 LUM_CLAMP_CEIL = 245.0 / 255.0  # export luminance ceiling
-HD_TARGET = 6_000_000
-WORLD_TARGET = 2_000_000
-DESKTOP_TARGET = 1_200_000
+# Match/exceed current production tier density (world.splat ~3.06M, world-hd ~8.35M) so a
+# candidate can win the sharpness/detail A/B parameter, not just geometry.
+HD_TARGET = 8_000_000
+WORLD_TARGET = 3_000_000
+DESKTOP_TARGET = 1_500_000
 MOBILE_TARGET = 600_000
 
 

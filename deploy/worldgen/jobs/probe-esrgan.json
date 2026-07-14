@@ -1,0 +1,8 @@
+{
+  "jobId": "probe-esrgan",
+  "prompt": "night market real-esrgan sr validation probe",
+  "env": {
+    "PROBE_BASE_KEY": "worldgen-full-staging/probe-base/nm_base.png",
+    "PROBE_OUT_PREFIX": "worldgen-full-staging/probe-esrgan"
+  }
+}
