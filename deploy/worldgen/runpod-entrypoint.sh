@@ -74,6 +74,17 @@ nvidia-smi || { echo "[fatal] no GPU visible"; runpod_terminate_self; exit 1; }
 GPU_COUNT="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')"
 echo "[preflight] GPUs=$GPU_COUNT"
 
+# Recipe overlay: the baked image predates the higher-res recipe (Real-ESRGAN SR,
+# 360 shell, post-pass, updated worker.py). The launcher stages these to the private
+# bucket (dockerStartCmd is too small to inline worker.py); fetch them over the
+# baked copies before any worker.py patch/run below.
+if [[ -n "${OVERLAY_S3_PREFIX:-}" ]]; then
+  echo "[overlay] fetching recipe overlay from ${OVERLAY_S3_PREFIX}"
+  aws s3 cp "${OVERLAY_S3_PREFIX}/" /app/deploy/worldgen/ --recursive \
+    --region "$AWS_REGION" --exclude '*' --include '*.py' --only-show-errors \
+    && echo "[overlay] recipe overlay applied" || echo "[overlay] fetch FAILED (using baked)"
+fi
+
 # Sync the license-controlled private weights cache. Raise concurrency so the
 # ~196 GB pull saturates the pod NIC instead of the default 10 streams. Skip if
 # a mounted volume already has the cache staged (idempotent reuse).
@@ -96,6 +107,29 @@ fi
 # refs/main + snapshots for every resolve_hf_checkpoint() model.
 mkdir -p "$HOME/.cache/huggingface"
 ln -sfn "$MODEL_ROOT/hub" "$HOME/.cache/huggingface/hub"
+
+# ---- Feasibility probe mode: run a bounded experiment instead of the worker. ----
+# Assess higher-resolution native HY-Pano generation (VRAM/time/quality) before
+# committing GPU to a full higher-res converged run. Skips the worker preflight,
+# redis, socat, and all gs_train patches (irrelevant to a pano probe), then
+# self-terminates. The probe script is delivered inline by the launcher.
+if [[ -n "${PROBE_MODE:-}" ]]; then
+  echo "[probe] probe mode: ${PROBE_MODE}"
+  export HF_HOME="$MODEL_ROOT" HF_HUB_OFFLINE=1
+  export MODEL_BUCKET AWS_REGION
+  cd /app/hyworld2/panogen
+  export PYTHONUNBUFFERED=1
+  case "${PROBE_MODE}" in
+    pano)    python -u /app/deploy/worldgen/pano_res_probe.py || echo "[probe] script errored" ;;
+    tiledsr) python -u /app/deploy/worldgen/tiledsr_probe.py || echo "[probe] script errored" ;;
+    esrgan)  python -u /app/deploy/worldgen/esrgan_probe.py || echo "[probe] script errored" ;;
+    *)       echo "[probe] unknown PROBE_MODE ${PROBE_MODE}" ;;
+  esac
+  aws s3 cp "$LOG_FILE" "$LOG_S3" --region "$AWS_REGION" --only-show-errors 2>/dev/null || true
+  echo "[probe] done; self-terminating"
+  runpod_terminate_self
+  exit 0
+fi
 
 # Local Redis for the worker queue semantics.
 redis-server --daemonize yes --save '' --appendonly no

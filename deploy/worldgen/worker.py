@@ -93,6 +93,22 @@ class Config:
     MAX_JOB_SECONDS = int(os.environ.get("MAX_JOB_SECONDS", "16200"))  # 4.5 h hard cap
     PANO_WIDTH = int(os.environ.get("PANO_WIDTH", "1952"))
     PANO_HEIGHT = int(os.environ.get("PANO_HEIGHT", "960"))
+    # Higher-res recipe (genuine detail without LoRA composition duplication): refine the
+    # coherent native base pano to PANO_SR_* via tiled equirect SR, then render views at a
+    # higher splitted resolution so multi-view video/3DGS aren't stuck at 832x480.
+    HIGHRES_PANO = os.environ.get("HIGHRES_PANO", "0") == "1"
+    # SR method: "esrgan" (Real-ESRGAN, structure-preserving, coherence-safe; approved) or
+    # "tiled" (20B edit refine; not pixel-aligned -> ghosts, kept only for comparison).
+    SR_METHOD = os.environ.get("SR_METHOD", "esrgan")
+    PANO_SR_WIDTH = int(os.environ.get("PANO_SR_WIDTH", "3840"))
+    PANO_SR_HEIGHT = int(os.environ.get("PANO_SR_HEIGHT", "1920"))
+    VIEW_RESOLUTION = int(os.environ.get("VIEW_RESOLUTION", "480"))  # traj_generate splitted res
+    POSTPROCESS_SPLAT = os.environ.get("POSTPROCESS_SPLAT", "0") == "1"
+    # 360deg panorama-shell backdrop so the reconstruction's uncovered back hemisphere
+    # is filled from the full pano instead of reading as a pure-black void.
+    SHELL_COVERAGE = os.environ.get("SHELL_COVERAGE", "0") == "1"
+    SHELL_TARGET = int(os.environ.get("SHELL_TARGET", "350000"))
+    SHELL_RADIUS_SCALE = float(os.environ.get("SHELL_RADIUS_SCALE", "1.35"))
     GS_MAX_STEPS = int(os.environ.get("GS_MAX_STEPS", "2000"))  # x4 GPUs per upstream README
     SOURCE_COMMIT = os.environ.get("SOURCE_COMMIT", "unknown")
     IMAGE_URI = os.environ.get("IMAGE_URI", "unknown")
@@ -638,7 +654,7 @@ def finalize_landmark_mapping(scene_dir: Path, result_dir: Path) -> dict:
     return mapping
 
 
-def export_viewer_splat(result_dir: Path) -> Path:
+def export_viewer_splat(result_dir: Path, pano_path: Path | None = None) -> Path:
     """Convert the learned final 3DGS PLY to the viewer's binary .splat format."""
     import numpy as np
     from plyfile import PlyData
@@ -687,6 +703,61 @@ def export_viewer_splat(result_dir: Path) -> Path:
     rotation /= np.linalg.norm(rotation, axis=1, keepdims=True) + 1e-12
     record["rotation"] = np.clip(rotation * 128.0 + 128.0, 0, 255).astype(np.uint8)
     sorted_record = record[order]
+
+    # Persist the raw trained splat so the shell / post-pass / LoD tiers can be re-derived
+    # cheaply offline (no GPU stage re-run) if a later gate needs calibration.
+    try:
+        (result_dir / "world-trained-raw.splat").write_bytes(sorted_record.tobytes())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("raw trained splat persist failed (non-fatal): %s", exc)
+
+    # Build the 360deg background shell once (aligned to the reconstruction frame) so the
+    # uncovered back hemisphere is filled from the pano rather than reading as a void. The
+    # shell is added AFTER tiering/post-pass because its splats are intentionally large.
+    shell_rec = None
+    if Config.SHELL_COVERAGE and pano_path is not None and Path(pano_path).exists():
+        try:
+            import pano_shell
+            from PIL import Image
+            fwd, up = pano_shell.alignment_from_cameras(result_dir)
+            shell_rec = pano_shell.shell_gaussians(
+                Image.open(pano_path), sorted_record["position"],
+                forward=fwd, up=up, target=Config.SHELL_TARGET,
+                radius_scale=Config.SHELL_RADIUS_SCALE,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("panorama shell build failed (non-fatal): %s", exc)
+
+    def _with_shell(rec, budget):
+        if shell_rec is None:
+            return rec
+        import pano_shell
+        s = pano_shell.subsample(shell_rec, budget)
+        return np.concatenate([rec, s])
+
+    _shell_budget = {  # per-tier shell splat budget (background needn't be dense)
+        "world-hd.splat": Config.SHELL_TARGET, "world.splat": min(Config.SHELL_TARGET, 250_000),
+        "world-desktop.splat": 150_000, "world-mobile.splat": 60_000,
+    }
+
+    if Config.POSTPROCESS_SPLAT:
+        # Converged recipe: cull blobby/dark/void gaussians, calibrate scale into the
+        # 0.012-0.026 band, lum-clamp, and build genuine (non-identical) LoD tiers.
+        try:
+            import splat_postprocess
+            tier_records = splat_postprocess.build_tiers(sorted_record)
+            for name, rec in tier_records.items():
+                rec = _with_shell(rec, _shell_budget.get(name, 150_000))
+                tier_path = result_dir / name
+                tier_path.write_bytes(rec.tobytes())
+                logger.info("viewer tier %s exported: %d gaussians (%s shell), %.1fMB",
+                            name, len(rec), "with" if shell_rec is not None else "no",
+                            tier_path.stat().st_size / 1e6)
+            logger.info("viewer splats exported (post-processed) from PLY %s", ply_path)
+            return result_dir / "world.splat"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("splat post-process failed (%s); falling back to raw tiers", exc)
+
     tiers = {
         "world-mobile.splat": min(count, 2_000_000),   # <=64 MB
         "world-desktop.splat": min(count, 4_000_000), # <=128 MB
@@ -694,7 +765,8 @@ def export_viewer_splat(result_dir: Path) -> Path:
     }
     for name, tier_count in tiers.items():
         tier_path = result_dir / name
-        tier_path.write_bytes(sorted_record[:tier_count].tobytes())
+        rec = _with_shell(sorted_record[:tier_count], _shell_budget.get(name, 150_000))
+        tier_path.write_bytes(rec.tobytes())
         logger.info(
             "viewer tier %s exported: %d gaussians, %.1fMB",
             name, tier_count, tier_path.stat().st_size / 1e6,
@@ -745,6 +817,32 @@ def generate_panorama(seed_image: Path, prompt: str, out_path: Path, seed: int =
         "--seed", str(seed),
     ]
     run_stage("panorama", cmd, cwd=Config.REPO_DIR / "hyworld2" / "panogen")
+
+
+def generate_highres_panorama(base_pano: Path, prompt: str, out_path: Path) -> None:
+    """Structure-preserving SR: upscale the coherent native base pano to PANO_SR_* while
+    preserving exact composition (no ghosting/hallucination). Default is Real-ESRGAN
+    (approved coherence-safe SR CNN); SR_METHOD=tiled keeps the 20B edit refiner for
+    comparison only. Subprocess so GPU memory is released before the worldgen stages."""
+    tmp_out = out_path.with_name("panorama_hr.png")
+    if Config.SR_METHOD == "tiled":
+        script = Config.REPO_DIR / "deploy" / "worldgen" / "pano_tiled_sr.py"
+        cmd = [
+            sys.executable, str(script),
+            "--input", str(base_pano), "--output", str(tmp_out),
+            "--width", str(Config.PANO_SR_WIDTH), "--height", str(Config.PANO_SR_HEIGHT),
+            "--prompt", prompt,
+        ]
+    else:
+        script = Config.REPO_DIR / "deploy" / "worldgen" / "realesrgan_sr.py"
+        cmd = [
+            sys.executable, str(script),
+            "--input", str(base_pano), "--output", str(tmp_out),
+            "--width", str(Config.PANO_SR_WIDTH), "--height", str(Config.PANO_SR_HEIGHT),
+        ]
+    run_stage("panorama_sr", cmd, cwd=Config.REPO_DIR / "hyworld2" / "panogen")
+    if tmp_out.exists():
+        tmp_out.replace(out_path)
 
 
 # --------------------------------------------------------------------------
@@ -880,9 +978,23 @@ def publish_provenance_manifest(s3, job_id: str, output_prefix: str, prompt_meta
         "image": Config.IMAGE_URI,
         "prompt": prompt_meta,
         "nativePanoramaResolution": [Config.PANO_WIDTH, Config.PANO_HEIGHT],
-        "upscaledPanoramaResolution": None,
+        "upscaledPanoramaResolution": (
+            [Config.PANO_SR_WIDTH, Config.PANO_SR_HEIGHT] if Config.HIGHRES_PANO else None
+        ),
+        "viewRenderResolution": Config.VIEW_RESOLUTION,
+        "srMethod": (Config.SR_METHOD if Config.HIGHRES_PANO else None),
+        "panoramaShellCoverage": Config.SHELL_COVERAGE,
         "truthfulResolutionNote": (
-            "HY-Pano Qwen backend native output; no super-resolution label or synthetic 4K claim"
+            (
+                "HY-Pano Qwen native base 1952x960, upscaled by Real-ESRGAN x4 then resampled "
+                f"to {Config.PANO_SR_WIDTH}x{Config.PANO_SR_HEIGHT} (structure-preserving detail, "
+                "NOT native/4K generation)"
+                if Config.SR_METHOD == "esrgan"
+                else "HY-Pano Qwen native base 1952x960, refined by tiled equirect img2img SR to "
+                f"{Config.PANO_SR_WIDTH}x{Config.PANO_SR_HEIGHT} (not native/4K)"
+            )
+            if Config.HIGHRES_PANO
+            else "HY-Pano Qwen backend native output; no super-resolution or synthetic 4K claim"
         ),
         "stages": stages,
         "totalEstimatedCostUsd": round(sum(item.get("estimatedCostUsd") or 0 for item in stages), 4),
@@ -1064,6 +1176,10 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
         if not completed("panorama"):
             stage_start = time.time()
             generate_panorama(seed_path, full_prompt, pano_path, seed=int(job.get("seed", 42)))
+            if Config.HIGHRES_PANO:
+                # Genuine higher-res: tiled equirect SR on the coherent native base
+                # (in-place overwrite so downstream reads the higher-res pano).
+                generate_highres_panorama(pano_path, full_prompt, pano_path)
             checkpoint("panorama", stage_start)
         if pause_requested("panorama"):
             return
@@ -1083,6 +1199,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
                 "--target_path", str(scene_dir), *vlm_args,
                 "--apply_nav_traj", "--apply_up_route", "--apply_recon_iteration",
                 "--force_vlm", "--skip_exist",
+                "--splitted_resolution", str(Config.VIEW_RESOLUTION),
             ], cwd=wg, log_path=scene_dir / "logs/traj_generate.log")
             checkpoint("traj_generate", stage_start)
         if pause_requested("traj_generate"):
@@ -1178,7 +1295,7 @@ def process_job(r: redis.Redis, raw_job: str) -> None:
         set_status("viewer_export")
         if not completed("viewer_export"):
             stage_start = time.time()
-            export_viewer_splat(result_dir)
+            export_viewer_splat(result_dir, pano_path=scene_dir / "panorama.png")
             checkpoint("viewer_export", stage_start)
 
         # Upload
