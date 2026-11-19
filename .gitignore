@@ -10,3 +10,5 @@ skyseg.onnx
 *.ckpt
 CLAUDE.md
 commands.sh
+config.bat
+node_modules

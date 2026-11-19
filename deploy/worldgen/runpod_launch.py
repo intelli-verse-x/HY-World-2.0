@@ -129,13 +129,21 @@ def main() -> int:
     ap.add_argument("--rate-usd", type=float, default=2.69,
                     help="verified pod hourly rate for cost accounting")
     ap.add_argument("--hard-deadline-seconds", type=int, default=14400)
-    ap.add_argument("--confirm-seconds", type=int, default=600,
-                    help="max time to confirm RUNNING before terminating")
+    ap.add_argument("--confirm-seconds", type=int, default=1200,
+                    help="max time to confirm RUNNING before terminating. Must exceed the "
+                         "pod cold-boot + network-volume attach time (a 400GB volume + image "
+                         "pull can take 5-8 min); too-low values DELETE a healthy pod mid-run.")
     ap.add_argument("--network-volume-id", default=None,
                     help="attach an existing encrypted volume at /models so the "
                          "196GB weight cache is staged once and reused (skips the "
                          "~22min per-run S3 sync). RunPod pins the pod to its DC.")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--probe", default=None,
+                    help="feasibility probe mode (e.g. 'pano'); runs the probe "
+                         "instead of the worker, then self-terminates")
+    ap.add_argument("--gpu-type", default=None,
+                    help="pin a single RunPod gpuTypeId (e.g. 'NVIDIA H200') instead "
+                         "of the default 80GB-first preference list")
     args = ap.parse_args()
 
     job = json.load(open(args.job))
@@ -173,6 +181,13 @@ def main() -> int:
         "RUNPOD_API_KEY": key,
         **pod_creds,
     }
+    # Merge additive job-level env (e.g. PROBE_BASE_KEY, recipe flags) without letting
+    # a job clobber the required/secret keys set above.
+    for _k, _v in (job.get("env") or {}).items():
+        if _k not in env:
+            env[_k] = str(_v)
+    if args.probe:
+        env["PROBE_MODE"] = args.probe
     # Hero run uses container disk (no network volume) to avoid data-center
     # pinning; RunPod places the pod in whichever US Secure Cloud DC has an
     # 80 GB GPU available.
@@ -197,9 +212,56 @@ def main() -> int:
         "method='DELETE',headers={'Authorization':'Bearer '+os.environ['RUNPOD_API_KEY']}),timeout=20)\" ; "
         "kill -9 1"
     )
+    # The baked image predates these recipe files / worker.py edits, so deliver them
+    # inline (base64) to /app/deploy/worldgen/ before the entrypoint runs. Worker runs
+    # get the full higher-res recipe overlay (SR/shell/post-pass + updated worker.py);
+    # probe runs get only what the PROBE_MODE branch needs. Entrypoint seds against
+    # worker.py are grep-guarded, so overwriting with the newer file is safe.
+    _pdir = os.path.dirname(ENTRYPOINT_PATH)
+    _recipe_overlay = [
+        "worker.py", "pano_tiled_sr.py", "splat_postprocess.py",
+        "realesrgan_sr.py", "pano_shell.py",
+    ]
+    _probe_extra = {
+        "pano": ["pano_res_probe.py"],
+        "tiledsr": ["pano_tiled_sr.py", "tiledsr_probe.py"],
+        "esrgan": ["realesrgan_sr.py", "esrgan_probe.py"],
+    }
+    probe_deliver = ""
+    if args.probe:
+        # Probe files are small: inline base64 in dockerStartCmd is fine.
+        for _fname in dict.fromkeys(_probe_extra.get(args.probe, [])):
+            _fpath = os.path.join(_pdir, _fname)
+            if not os.path.exists(_fpath):
+                continue
+            with open(_fpath, "rb") as fh:
+                _b64 = base64.b64encode(fh.read()).decode()
+            probe_deliver += (
+                f"printf %s '{_b64}' | base64 -d > /app/deploy/worldgen/{_fname} && "
+            )
+    else:
+        # worker.py alone is ~82KB b64; inlining all 5 recipe files blows past RunPod's
+        # dockerStartCmd size limit (500 unmarshal error). Deliver them via the private
+        # bucket instead (the runner role can read/write it); the entrypoint fetches
+        # OVERLAY_S3_PREFIX into /app/deploy/worldgen/ before running the worker.
+        import boto3
+        _s3o = boto3.client(
+            "s3", region_name=args.region,
+            aws_access_key_id=pod_creds["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=pod_creds["AWS_SECRET_ACCESS_KEY"],
+            aws_session_token=pod_creds["AWS_SESSION_TOKEN"],
+        )
+        _overlay_key = f"worldgen-full-ops/overlay/{job['jobId']}"
+        for _fname in _recipe_overlay:
+            _fpath = os.path.join(_pdir, _fname)
+            if os.path.exists(_fpath):
+                _s3o.upload_file(_fpath, MODEL_BUCKET, f"{_overlay_key}/{_fname}")
+        env["OVERLAY_S3_PREFIX"] = f"s3://{MODEL_BUCKET}/{_overlay_key}"
+        print(f"overlay_uploaded s3://{MODEL_BUCKET}/{_overlay_key} ({len(_recipe_overlay)} files)")
     start_cmd = (
         f"( {failsafe} ) & "
         f"printf %s '{script_b64}' | base64 -d > /tmp/runpod-entrypoint.sh && "
+        f"{probe_deliver}"
         "exec bash /tmp/runpod-entrypoint.sh"
     )
     pod_body = {
@@ -208,7 +270,7 @@ def main() -> int:
         "containerRegistryAuthId": auth_id,
         "cloudType": "SECURE",
         "computeType": "GPU",
-        "gpuTypeIds": GPU_PREFERENCE,
+        "gpuTypeIds": [args.gpu_type] if args.gpu_type else GPU_PREFERENCE,
         "gpuCount": 1,
         "containerDiskInGb": args.volume_gb,
         "env": env,
